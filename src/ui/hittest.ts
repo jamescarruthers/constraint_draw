@@ -1,4 +1,4 @@
-import { Entity, getPointPos, getLineEndpoints, getCircleParams, getArcParams, getEllipseParams } from '../core/entity';
+import { Entity, getPointPos, getLineEndpoints, getCircleParams, getArcParams, getArcEndpoints, getEllipseParams } from '../core/entity';
 import { Vec } from '../core/types';
 
 /** Hit test result */
@@ -81,7 +81,18 @@ export function hitTest(
       }
       case 'arc': {
         const { cx, cy, r, thetaStart, thetaEnd } = getArcParams(entity, q);
+        const { start, end } = getArcEndpoints(entity, q);
         const v = entity.vars;
+
+        // Test start/end endpoints
+        const dStart = Math.hypot(wx - start[0], wy - start[1]);
+        if (dStart < pointThreshold) {
+          results.push({ entity, part: 'p1', distance: dStart, vars: [v[5], v[6]] });
+        }
+        const dEnd = Math.hypot(wx - end[0], wy - end[1]);
+        if (dEnd < pointThreshold) {
+          results.push({ entity, part: 'p2', distance: dEnd, vars: [v[7], v[8]] });
+        }
 
         // Test center
         const dc = Math.hypot(wx - cx, wy - cy);

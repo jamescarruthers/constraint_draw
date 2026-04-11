@@ -22,7 +22,11 @@ export interface Entity {
 export const ENTITY_DOF: Record<EntityType, number> = {
   point: 2,    // x, y
   line: 4,     // x1, y1, x2, y2
-  arc: 5,      // cx, cy, r, theta_start, theta_end
+  // cx, cy, r, theta_start, theta_end, sx, sy, ex, ey
+  // The last four (start/end endpoint coordinates) are coupled to the first
+  // five via an auto-added ArcEndpointCouplingConstraint, so the entity
+  // still contributes 5 effective degrees of freedom.
+  arc: 9,
   circle: 3,   // cx, cy, r
   ellipse: 5,  // cx, cy, rx, ry, angle
 };
@@ -88,6 +92,18 @@ export function getArcParams(entity: Entity, q: Vec): {
   return {
     cx: q[v[0]], cy: q[v[1]], r: q[v[2]],
     thetaStart: q[v[3]], thetaEnd: q[v[4]],
+  };
+}
+
+/** Get arc endpoint positions (sx, sy, ex, ey) from q */
+export function getArcEndpoints(entity: Entity, q: Vec): {
+  start: [number, number];
+  end: [number, number];
+} {
+  const v = entity.vars;
+  return {
+    start: [q[v[5]], q[v[6]]],
+    end: [q[v[7]], q[v[8]]],
   };
 }
 

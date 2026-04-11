@@ -238,7 +238,11 @@ export class Renderer {
     } else if (entity.type === 'line') {
       if (part === 'p1') pos = [q[entity.vars[0]], q[entity.vars[1]]];
       else if (part === 'p2') pos = [q[entity.vars[2]], q[entity.vars[3]]];
-    } else if (entity.type === 'circle' || entity.type === 'arc' || entity.type === 'ellipse') {
+    } else if (entity.type === 'arc') {
+      if (part === 'center') pos = [q[entity.vars[0]], q[entity.vars[1]]];
+      else if (part === 'p1') pos = [q[entity.vars[5]], q[entity.vars[6]]];
+      else if (part === 'p2') pos = [q[entity.vars[7]], q[entity.vars[8]]];
+    } else if (entity.type === 'circle' || entity.type === 'ellipse') {
       if (part === 'center') pos = [q[entity.vars[0]], q[entity.vars[1]]];
     }
 
@@ -412,8 +416,15 @@ export class Renderer {
         drawNode(x2, y2, entity.vars[2], true);
         break;
       }
+      case 'arc': {
+        // Arcs expose 3 nodes: center + two selectable endpoints
+        const v = entity.vars;
+        drawNode(q[v[0]], q[v[1]], v[0], false);
+        drawNode(q[v[5]], q[v[6]], v[5], true);
+        drawNode(q[v[7]], q[v[8]], v[7], true);
+        break;
+      }
       case 'circle':
-      case 'arc':
       case 'ellipse': {
         const v = entity.vars;
         drawNode(q[v[0]], q[v[1]], v[0], false);

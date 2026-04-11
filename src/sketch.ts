@@ -23,6 +23,7 @@ import {
   TangentCircleCircleConstraint,
   HorizontalDistConstraint,
   VerticalDistConstraint,
+  ArcEndpointCouplingConstraint,
 } from './core/constraint';
 import { NRSolver } from './core/solver';
 import { DOFAnalyser } from './core/dof';
@@ -56,11 +57,24 @@ export class SketchDocument {
   // ─── Entity Management ─────────────────────────────────────────
 
   addEntity(type: EntityType, initialValues: number[], id?: string): Entity {
-    const { entity, newOffset } = createEntity(type, initialValues, this.nextVarOffset, id);
+    // Arcs: accept either 5 canonical values (cx, cy, r, θs, θe) or the full
+    // 9-value form (appending the start/end endpoint positions). When given
+    // 5 values, derive the 4 endpoint values so the caller doesn't have to.
+    let values = initialValues;
+    if (type === 'arc' && initialValues.length === 5) {
+      const [cx, cy, r, ts, te] = initialValues;
+      values = [
+        cx, cy, r, ts, te,
+        cx + r * Math.cos(ts), cy + r * Math.sin(ts),
+        cx + r * Math.cos(te), cy + r * Math.sin(te),
+      ];
+    }
+
+    const { entity, newOffset } = createEntity(type, values, this.nextVarOffset, id);
     this.entities.push(entity);
 
     // Extend q with initial values
-    for (const val of initialValues) {
+    for (const val of values) {
       this.q.push(val);
     }
     this.nextVarOffset = newOffset;
@@ -70,6 +84,17 @@ export class SketchDocument {
       if (entity.fixed[i]) {
         this.fixedVars.add(entity.vars[i]);
       }
+    }
+
+    // Auto-add the arc endpoint coupling constraint so the endpoint vars
+    // stay consistent with (center, radius, θs, θe).
+    if (type === 'arc') {
+      const v = entity.vars;
+      const coupling = new ArcEndpointCouplingConstraint(
+        v[0], v[1], v[2], v[3], v[4], v[5], v[6], v[7], v[8],
+        [entity.id]
+      );
+      this.constraints.push(coupling);
     }
 
     this.markDirty();
@@ -444,6 +469,37 @@ export class SketchDocument {
     this.solve();
   }
 
+  /**
+   * Rigidly translate a line by setting its endpoint positions directly
+   * and solving with the line pinned. Used for dragging a line by its body.
+   * The solver then adjusts any connected geometry (coincident neighbours,
+   * tangent circles, etc.) to satisfy the constraints.
+   */
+  translateLineRigid(
+    line: Entity,
+    newP1: [number, number],
+    newP2: [number, number]
+  ): void {
+    const v = line.vars;
+    this.q[v[0]] = newP1[0];
+    this.q[v[1]] = newP1[1];
+    this.q[v[2]] = newP2[0];
+    this.q[v[3]] = newP2[1];
+
+    const fixed = new Set(this.fixedVars);
+    fixed.add(v[0]);
+    fixed.add(v[1]);
+    fixed.add(v[2]);
+    fixed.add(v[3]);
+
+    this.state = 'solving';
+    const t0 = performance.now();
+    const result = this.solver.solve(this.q, this.constraints, fixed);
+    this.q = result.q;
+    this.lastSolveMs = performance.now() - t0;
+    this.state = 'dragging';
+  }
+
   // ─── Construction Toggle ───────────────────────────────────────
 
   toggleConstruction(entityId: string): void {
@@ -458,19 +514,29 @@ export class SketchDocument {
 
   toJSON(): object {
     return {
-      entities: this.entities.map(e => ({
-        id: e.id,
-        type: e.type,
-        q: e.vars.map(v => this.q[v]),
-        fixed: e.fixed,
-        construction: e.construction,
-      })),
-      constraints: this.constraints.map(c => ({
-        id: c.id,
-        type: c.type,
-        entities: c.entityIds,
-        params: c.params,
-      })),
+      entities: this.entities.map(e => {
+        // Arcs serialise only their 5 canonical params; the endpoint vars
+        // are re-derived on load via addEntity's 5→9 expansion.
+        const vars = e.type === 'arc' ? e.vars.slice(0, 5) : e.vars;
+        const fixed = e.type === 'arc' ? e.fixed.slice(0, 5) : e.fixed;
+        return {
+          id: e.id,
+          type: e.type,
+          q: vars.map(v => this.q[v]),
+          fixed,
+          construction: e.construction,
+        };
+      }),
+      constraints: this.constraints
+        // Don't emit auto-added internal constraints — they're re-added
+        // during addEntity on load.
+        .filter(c => c.type !== 'arcEndpointCoupling')
+        .map(c => ({
+          id: c.id,
+          type: c.type,
+          entities: c.entityIds,
+          params: c.params,
+        })),
     };
   }
 

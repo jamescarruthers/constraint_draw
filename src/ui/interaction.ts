@@ -2,7 +2,7 @@ import { SketchDocument } from '../sketch';
 import { Renderer, RenderState, DrawingPreview } from './renderer';
 import { hitTest, HitResult } from './hittest';
 import { ConstraintType } from '../core/types';
-import { Entity } from '../core/entity';
+import { Entity, getLineEndpoints } from '../core/entity';
 
 export type ToolMode =
   | 'select'
@@ -47,6 +47,15 @@ export class InteractionHandler {
   private isDragging = false;
   private dragGrabVars: [number, number] | null = null;
   private dragEntityId: string | null = null;
+
+  /** Active rigid line-body drag state (perpendicular translation) */
+  private lineBodyDrag: {
+    line: Entity;
+    origP1: [number, number];
+    origP2: [number, number];
+    perpDir: [number, number];
+    origCursor: [number, number];
+  } | null = null;
 
   // Pan state
   private isPanning = false;
@@ -173,6 +182,24 @@ export class InteractionHandler {
       return;
     }
 
+    if (this.lineBodyDrag) {
+      const st = this.lineBodyDrag;
+      const cdx = wx - st.origCursor[0];
+      const cdy = wy - st.origCursor[1];
+      // Project the cursor delta onto the line's perpendicular direction
+      // and translate both endpoints by that projected offset.
+      const perp = cdx * st.perpDir[0] + cdy * st.perpDir[1];
+      const ox = perp * st.perpDir[0];
+      const oy = perp * st.perpDir[1];
+      this.doc.translateLineRigid(
+        st.line,
+        [st.origP1[0] + ox, st.origP1[1] + oy],
+        [st.origP2[0] + ox, st.origP2[1] + oy]
+      );
+      this.renderFrame();
+      return;
+    }
+
     if (this.isDragging && this.dragGrabVars) {
       this.doc.dragStep(this.dragGrabVars, [wx, wy]);
       this.renderFrame();
@@ -221,6 +248,15 @@ export class InteractionHandler {
   private onMouseUp(_e: MouseEvent): void {
     if (this.isPanning) {
       this.isPanning = false;
+      return;
+    }
+
+    if (this.lineBodyDrag) {
+      this.lineBodyDrag = null;
+      this.isDragging = false;
+      this.dragEntityId = null;
+      this.doc.endDrag();
+      this.renderFrame();
       return;
     }
 
@@ -277,6 +313,27 @@ export class InteractionHandler {
       const hit = hits[0];
       this.selectedEntities = [hit.entity];
 
+      // Special case: grabbing the BODY of a line kicks off a rigid
+      // perpendicular translation rather than a point-grab drag, so the
+      // whole line slides sideways while keeping length/direction.
+      if (hit.entity.type === 'line' && hit.part === 'body') {
+        const [[x1, y1], [x2, y2]] = getLineEndpoints(hit.entity, this.doc.q);
+        const dx = x2 - x1, dy = y2 - y1;
+        const len = Math.hypot(dx, dy) || 1;
+        this.lineBodyDrag = {
+          line: hit.entity,
+          origP1: [x1, y1],
+          origP2: [x2, y2],
+          perpDir: [-dy / len, dx / len],
+          origCursor: [...this.mouseWorld] as [number, number],
+        };
+        this.isDragging = true;
+        this.dragEntityId = hit.entity.id;
+        this.updateStatus();
+        this.renderFrame();
+        return;
+      }
+
       // Start dragging the specific sub-part (endpoint, center, etc.)
       this.isDragging = true;
       this.dragEntityId = hit.entity.id;
@@ -304,13 +361,20 @@ export class InteractionHandler {
   /**
    * When grabbing a specific sub-part of an entity, return the list of
    * variable indices to temporarily pin for the duration of the drag.
-   * For a line endpoint: pin the opposite endpoint.
+   *   - Line endpoint: pin the opposite endpoint.
+   *   - Arc endpoint: pin the center and the opposite endpoint, so the
+   *     dragged endpoint slides along the arc's circle (radius preserved).
    */
   private computeTempFixedForDrag(hit: HitResult): number[] {
     const e = hit.entity;
     if (e.type === 'line') {
       if (hit.part === 'p1') return [e.vars[2], e.vars[3]];
       if (hit.part === 'p2') return [e.vars[0], e.vars[1]];
+    }
+    if (e.type === 'arc') {
+      // Pin center + the non-grabbed endpoint
+      if (hit.part === 'p1') return [e.vars[0], e.vars[1], e.vars[7], e.vars[8]];
+      if (hit.part === 'p2') return [e.vars[0], e.vars[1], e.vars[5], e.vars[6]];
     }
     return [];
   }
@@ -377,6 +441,9 @@ export class InteractionHandler {
     } else if (other.type === 'line') {
       if (hit.part === 'p1') otherVars = [other.vars[0], other.vars[1]];
       else if (hit.part === 'p2') otherVars = [other.vars[2], other.vars[3]];
+    } else if (other.type === 'arc') {
+      if (hit.part === 'p1') otherVars = [other.vars[5], other.vars[6]];
+      else if (hit.part === 'p2') otherVars = [other.vars[7], other.vars[8]];
     }
 
     if (!otherVars) return;
@@ -400,7 +467,12 @@ export class InteractionHandler {
         if (h.part === 'p1') return { pos: [this.doc.q[h.entity.vars[0]], this.doc.q[h.entity.vars[1]]] };
         if (h.part === 'p2') return { pos: [this.doc.q[h.entity.vars[2]], this.doc.q[h.entity.vars[3]]] };
       }
-      if ((h.entity.type === 'circle' || h.entity.type === 'arc') && h.part === 'center') {
+      if (h.entity.type === 'arc') {
+        if (h.part === 'p1') return { pos: [this.doc.q[h.entity.vars[5]], this.doc.q[h.entity.vars[6]]] };
+        if (h.part === 'p2') return { pos: [this.doc.q[h.entity.vars[7]], this.doc.q[h.entity.vars[8]]] };
+        if (h.part === 'center') return { pos: [this.doc.q[h.entity.vars[0]], this.doc.q[h.entity.vars[1]]] };
+      }
+      if (h.entity.type === 'circle' && h.part === 'center') {
         return { pos: [this.doc.q[h.entity.vars[0]], this.doc.q[h.entity.vars[1]]] };
       }
     }
@@ -440,6 +512,12 @@ export class InteractionHandler {
       const thetaEnd = Math.atan2(end.wy - center.wy, end.wx - center.wx);
       const a = this.doc.addEntity('arc', [center.wx, center.wy, Math.max(r, 10), thetaStart, thetaEnd]);
       this.applyConstructionMode(a);
+
+      // Auto-coincident the arc endpoints with any clicked existing
+      // points or line/arc endpoints (mirroring line-drawing behavior).
+      this.autoCoincidentArcEndpoint(a, 'p1', start.hit);
+      this.autoCoincidentArcEndpoint(a, 'p2', end.hit);
+
       this.pendingClicks = [];
       this.doc.solve();
       this.returnToSelect();
@@ -447,6 +525,39 @@ export class InteractionHandler {
     }
     this.updateStatus();
     this.renderFrame();
+  }
+
+  /** Coincident an arc's start/end endpoint with an existing entity's
+   *  point sub-part, analogous to autoCoincidentEndpoint for lines. */
+  private autoCoincidentArcEndpoint(arc: Entity, which: 'p1' | 'p2', hit?: HitResult): void {
+    if (!hit) return;
+    const other = hit.entity;
+    if (other.id === arc.id) return;
+
+    const arcVars: [number, number] = which === 'p1'
+      ? [arc.vars[5], arc.vars[6]]
+      : [arc.vars[7], arc.vars[8]];
+
+    let otherVars: [number, number] | null = null;
+    if (other.type === 'point') {
+      otherVars = [other.vars[0], other.vars[1]];
+    } else if (other.type === 'line') {
+      if (hit.part === 'p1') otherVars = [other.vars[0], other.vars[1]];
+      else if (hit.part === 'p2') otherVars = [other.vars[2], other.vars[3]];
+    } else if (other.type === 'arc') {
+      if (hit.part === 'p1') otherVars = [other.vars[5], other.vars[6]];
+      else if (hit.part === 'p2') otherVars = [other.vars[7], other.vars[8]];
+    }
+
+    if (!otherVars) return;
+
+    this.doc.addConstraint(
+      'coincident',
+      [arc.id, other.id],
+      [],
+      undefined,
+      [arcVars, otherVars]
+    );
   }
 
   private handleConstraintClick(hits: HitResult[], wx: number, wy: number): void {
@@ -496,7 +607,13 @@ export class InteractionHandler {
       if (hit.part === 'p2') return [e.vars[2], e.vars[3]];
       return null; // line body, not a specific endpoint
     }
-    if (e.type === 'circle' || e.type === 'arc') {
+    if (e.type === 'arc') {
+      if (hit.part === 'center') return [e.vars[0], e.vars[1]];
+      if (hit.part === 'p1') return [e.vars[5], e.vars[6]];
+      if (hit.part === 'p2') return [e.vars[7], e.vars[8]];
+      return null;
+    }
+    if (e.type === 'circle') {
       if (hit.part === 'center') return [e.vars[0], e.vars[1]];
       return null;
     }

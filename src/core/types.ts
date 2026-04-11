@@ -70,7 +70,9 @@ export type ConstraintType =
   | 'tangentLineCircle'
   | 'tangentCircleCircle'
   | 'horizontalDist'
-  | 'verticalDist';
+  | 'verticalDist'
+  /** Internal: couples an arc's endpoint vars to its (cx,cy,r,θs,θe) params */
+  | 'arcEndpointCoupling';
 
 /** Solver states */
 export type SolverState = 'idle' | 'dirty' | 'solving' | 'solved' | 'conflict' | 'dragging';
