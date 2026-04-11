@@ -23,6 +23,7 @@ import {
   TangentCircleCircleConstraint,
   HorizontalDistConstraint,
   VerticalDistConstraint,
+  PerpDistanceConstraint,
   ArcEndpointCouplingConstraint,
   resolveSubPart,
 } from './core/constraint';
@@ -423,6 +424,38 @@ export class SketchDocument {
         if (!av || !bv) return null;
         const d = params[0] ?? (this.q[bv[1]] - this.q[av[1]]);
         return new VerticalDistConstraint(av[1], bv[1], d, eids, id);
+      }
+      case 'perpDistance': {
+        // Perpendicular distance from a point to a line. Accepts the
+        // entities in either order; the line is whichever slot holds a
+        // `line` entity, the point source is the other. When both slots
+        // are lines, the first line's p1 acts as the point and the
+        // second is the reference line — combined with a parallel
+        // constraint this dimensions two parallel lines a fixed distance
+        // apart.
+        const [e0, e1] = entities;
+        if (!e0 || !e1) return null;
+
+        let pointEnt: Entity;
+        let pointIdx: number;
+        let lineEnt: Entity;
+        if (e1.type === 'line') {
+          pointEnt = e0; pointIdx = 0; lineEnt = e1;
+        } else if (e0.type === 'line') {
+          pointEnt = e1; pointIdx = 1; lineEnt = e0;
+        } else {
+          return null;
+        }
+
+        const ptv = pv(pointIdx, pointEnt);
+        if (!ptv) return null;
+        const lv = lineEnt.vars;
+        const d = params[0] ?? 0;
+        return new PerpDistanceConstraint(
+          ptv[0], ptv[1],
+          lv[0], lv[1], lv[2], lv[3],
+          d, eids, id
+        );
       }
       default:
         return null;

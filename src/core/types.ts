@@ -71,6 +71,7 @@ export type ConstraintType =
   | 'tangentCircleCircle'
   | 'horizontalDist'
   | 'verticalDist'
+  | 'perpDistance'
   /** Internal: couples an arc's endpoint vars to its (cx,cy,r,θs,θe) params */
   | 'arcEndpointCoupling';
 

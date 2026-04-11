@@ -53,6 +53,7 @@ const CONSTRAINT_LABELS: Partial<Record<ConstraintType, string>> = {
   tangentCircleCircle: 'Tangent',
   horizontalDist: 'Horizontal dist',
   verticalDist: 'Vertical dist',
+  perpDistance: 'Perp. distance',
 };
 
 /** Constraint types whose single parameter is an angle in radians */
@@ -66,6 +67,7 @@ const DIMENSIONAL_TYPES: ConstraintType[] = [
   'fixedRadius',
   'horizontalDist',
   'verticalDist',
+  'perpDistance',
 ];
 
 /** A named slot on an entity that constraints can attach to */
