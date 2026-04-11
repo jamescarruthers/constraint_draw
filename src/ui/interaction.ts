@@ -67,6 +67,7 @@ export class InteractionHandler {
   // Callbacks
   onStatusUpdate?: (state: string, dof: string, info: string) => void;
   onToolChange?: (tool: ToolMode) => void;
+  onInfoPanelUpdate?: (selected: Entity[]) => void;
 
   constructor(doc: SketchDocument, renderer: Renderer, canvas: HTMLCanvasElement) {
     this.doc = doc;
@@ -714,6 +715,7 @@ export class InteractionHandler {
     };
     this.renderer.render(state);
     this.updateStatus();
+    this.onInfoPanelUpdate?.(this.selectedEntities);
   }
 
   /** Collect the set of variable indices referenced by at least one constraint */
