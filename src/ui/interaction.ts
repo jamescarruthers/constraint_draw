@@ -710,7 +710,30 @@ export class InteractionHandler {
       this.doc.pushUndo();
       this.doc.addConstraint(this.tool as ConstraintType, entityIds, params, undefined, subParts);
       this.pendingClicks = [];
-      this.doc.solve();
+
+      // Apply "reference doesn't move" semantics: when the constraint takes
+      // two or more entities, pin the variables of the LAST-clicked entity
+      // for the initial solve so that the subject (first clicked) moves to
+      // satisfy the constraint rather than the solver distributing the
+      // adjustment across both. Fall back to an unpinned solve if the
+      // pinned version can't converge (e.g. the constraint genuinely
+      // requires both entities to move).
+      if (entityIds.length >= 2) {
+        const target = this.doc.getEntity(entityIds[entityIds.length - 1]);
+        if (target) {
+          const savedQ = [...this.doc.q];
+          const ok = this.doc.solveWithExtraFixed(target.vars);
+          if (!ok) {
+            this.doc.q = savedQ;
+            this.doc.solve();
+          }
+        } else {
+          this.doc.solve();
+        }
+      } else {
+        this.doc.solve();
+      }
+
       this.returnToSelect();
       return;
     }
