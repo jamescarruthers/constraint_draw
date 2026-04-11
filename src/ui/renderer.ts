@@ -13,6 +13,8 @@ const COLORS = {
     'fully-constrained': '#e0e0e0',
     'over-constrained': '#e94560',
   },
+  /** Muted tone for construction / reference geometry */
+  construction: '#7a6f9c',
   selected: '#00e5ff',
   dragging: '#ffd740',
   /** Colour for endpoints/centres that participate in any constraint */
@@ -21,6 +23,8 @@ const COLORS = {
   dimension: '#f0a030',
   preview: '#ffd740',
   snap: '#ffd740',
+  /** Hover highlight for the entity currently under the cursor */
+  hover: '#ff7e9c',
 };
 
 /** Constraint icon symbols */
@@ -64,6 +68,10 @@ export interface RenderState {
   drawingPreview: DrawingPreview | null;
   /** Optional snap target under the cursor */
   snapTarget: [number, number] | null;
+  /** Entity ID currently hovered by the cursor (for targeting feedback) */
+  hoveredEntityId: string | null;
+  /** Which sub-part of the hovered entity ('body' | 'p1' | 'p2' | 'center') */
+  hoveredPart: string | null;
 }
 
 /**
@@ -127,6 +135,12 @@ export class Renderer {
     ctx.translate(this.panX, this.panY);
     ctx.scale(this.zoom, this.zoom);
 
+    // Hover highlight: thick soft glow under the hovered entity body
+    if (state.hoveredEntityId) {
+      const entity = state.entities.find(e => e.id === state.hoveredEntityId);
+      if (entity) this.drawHoverHighlight(entity, state);
+    }
+
     // Entities (wireframe first)
     for (const entity of state.entities) {
       const color = this.pickEntityColor(entity, state);
@@ -136,6 +150,12 @@ export class Renderer {
     // Draw node markers for endpoints/centers with constraint awareness
     for (const entity of state.entities) {
       this.drawEntityNodes(entity, state);
+    }
+
+    // Hover node marker on top
+    if (state.hoveredEntityId && state.hoveredPart) {
+      const entity = state.entities.find(e => e.id === state.hoveredEntityId);
+      if (entity) this.drawHoverNode(entity, state.hoveredPart, state.q);
     }
 
     // Drawing preview (ghost shape)
@@ -156,6 +176,83 @@ export class Renderer {
     ctx.restore();
   }
 
+  /** Draw a soft glow under the hovered entity's body so the user can see
+   *  what they're about to click. */
+  private drawHoverHighlight(entity: Entity, state: RenderState): void {
+    const ctx = this.ctx;
+    const q = state.q;
+    ctx.strokeStyle = COLORS.hover;
+    ctx.lineWidth = 6 / this.zoom;
+    ctx.globalAlpha = 0.4;
+    ctx.setLineDash([]);
+
+    switch (entity.type) {
+      case 'point': {
+        const [x, y] = getPointPos(entity, q);
+        ctx.beginPath();
+        ctx.arc(x, y, 8 / this.zoom, 0, Math.PI * 2);
+        ctx.stroke();
+        break;
+      }
+      case 'line': {
+        const [[x1, y1], [x2, y2]] = getLineEndpoints(entity, q);
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        break;
+      }
+      case 'circle': {
+        const { cx, cy, r } = getCircleParams(entity, q);
+        ctx.beginPath();
+        ctx.arc(cx, cy, Math.abs(r), 0, Math.PI * 2);
+        ctx.stroke();
+        break;
+      }
+      case 'arc': {
+        const { cx, cy, r, thetaStart, thetaEnd } = getArcParams(entity, q);
+        ctx.beginPath();
+        ctx.arc(cx, cy, Math.abs(r), thetaStart, thetaEnd);
+        ctx.stroke();
+        break;
+      }
+      case 'ellipse': {
+        const { cx, cy, rx, ry, angle } = getEllipseParams(entity, q);
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, Math.abs(rx), Math.abs(ry), angle, 0, Math.PI * 2);
+        ctx.stroke();
+        break;
+      }
+    }
+
+    ctx.globalAlpha = 1;
+  }
+
+  /** Draw an emphasized marker over the specifically hovered sub-part */
+  private drawHoverNode(entity: Entity, part: string, q: Vec): void {
+    const ctx = this.ctx;
+    let pos: [number, number] | null = null;
+
+    if (entity.type === 'point') {
+      pos = getPointPos(entity, q);
+    } else if (entity.type === 'line') {
+      if (part === 'p1') pos = [q[entity.vars[0]], q[entity.vars[1]]];
+      else if (part === 'p2') pos = [q[entity.vars[2]], q[entity.vars[3]]];
+    } else if (entity.type === 'circle' || entity.type === 'arc' || entity.type === 'ellipse') {
+      if (part === 'center') pos = [q[entity.vars[0]], q[entity.vars[1]]];
+    }
+
+    if (!pos) return;
+
+    const r = 7 / this.zoom;
+    ctx.strokeStyle = COLORS.hover;
+    ctx.lineWidth = 2 / this.zoom;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.arc(pos[0], pos[1], r, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
   private pickEntityColor(entity: Entity, state: RenderState): string {
     const isSelected = state.selectedEntityIds.has(entity.id);
     const isDragging = state.draggingEntityId === entity.id;
@@ -165,6 +262,7 @@ export class Renderer {
     if (isDragging) return COLORS.dragging;
     if (isSelected) return COLORS.selected;
     if (isOver) return COLORS.entity['over-constrained'];
+    if (entity.construction) return COLORS.construction;
     if (isUnder) return COLORS.entity['under-constrained'];
     return COLORS.entity['fully-constrained'];
   }
@@ -220,7 +318,15 @@ export class Renderer {
 
   private drawEntity(entity: Entity, q: Vec, color: string): void {
     const ctx = this.ctx;
-    const lineWidth = 2 / this.zoom;
+    const lineWidth = (entity.construction ? 1.2 : 2) / this.zoom;
+
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    if (entity.construction) {
+      ctx.setLineDash([6 / this.zoom, 4 / this.zoom]);
+    } else {
+      ctx.setLineDash([]);
+    }
 
     switch (entity.type) {
       case 'point': {
@@ -229,8 +335,6 @@ export class Renderer {
       }
       case 'line': {
         const [[x1, y1], [x2, y2]] = getLineEndpoints(entity, q);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = lineWidth;
         ctx.beginPath();
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
@@ -239,8 +343,6 @@ export class Renderer {
       }
       case 'circle': {
         const { cx, cy, r } = getCircleParams(entity, q);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = lineWidth;
         ctx.beginPath();
         ctx.arc(cx, cy, Math.abs(r), 0, Math.PI * 2);
         ctx.stroke();
@@ -248,8 +350,6 @@ export class Renderer {
       }
       case 'arc': {
         const { cx, cy, r, thetaStart, thetaEnd } = getArcParams(entity, q);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = lineWidth;
         ctx.beginPath();
         ctx.arc(cx, cy, Math.abs(r), thetaStart, thetaEnd);
         ctx.stroke();
@@ -257,14 +357,14 @@ export class Renderer {
       }
       case 'ellipse': {
         const { cx, cy, rx, ry, angle } = getEllipseParams(entity, q);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = lineWidth;
         ctx.beginPath();
         ctx.ellipse(cx, cy, Math.abs(rx), Math.abs(ry), angle, 0, Math.PI * 2);
         ctx.stroke();
         break;
       }
     }
+
+    ctx.setLineDash([]);
   }
 
   /**

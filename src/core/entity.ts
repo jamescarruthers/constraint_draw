@@ -14,6 +14,8 @@ export interface Entity {
   vars: number[];
   /** Per-variable fixed flag */
   fixed: boolean[];
+  /** If true, this entity is reference/construction geometry (rendered dashed) */
+  construction: boolean;
 }
 
 /** DOF per entity type */
@@ -50,6 +52,7 @@ export function createEntity(
     type,
     vars,
     fixed: new Array(dof).fill(false),
+    construction: false,
   };
 
   return { entity, newOffset: offset + dof };

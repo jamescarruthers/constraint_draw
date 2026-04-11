@@ -11,6 +11,7 @@ export type ToolMode =
   | 'circle'
   | 'arc'
   | 'delete'
+  | 'construction'
   | 'save'
   | 'load'
   | ConstraintType;
@@ -36,6 +37,9 @@ export class InteractionHandler {
 
   /** Current mouse world position — used for drawing previews */
   private mouseWorld: [number, number] = [0, 0];
+
+  /** Currently hovered hit (for highlight feedback in targeting modes) */
+  private hoveredHit: HitResult | null = null;
 
   // Drag state
   private isDragging = false;
@@ -64,6 +68,12 @@ export class InteractionHandler {
     this.canvas.addEventListener('mousedown', e => this.onMouseDown(e));
     this.canvas.addEventListener('mousemove', e => this.onMouseMove(e));
     this.canvas.addEventListener('mouseup', e => this.onMouseUp(e));
+    this.canvas.addEventListener('mouseleave', () => {
+      if (this.hoveredHit !== null) {
+        this.hoveredHit = null;
+        this.renderFrame();
+      }
+    });
     this.canvas.addEventListener('wheel', e => this.onWheel(e), { passive: false });
     this.canvas.addEventListener('contextmenu', e => e.preventDefault());
     window.addEventListener('keydown', e => this.onKeyDown(e));
@@ -77,6 +87,7 @@ export class InteractionHandler {
     this.tool = tool;
     this.pendingClicks = [];
     this.selectedEntities = [];
+    this.hoveredHit = null;
     this.onToolChange?.(tool);
     this.updateStatus();
     this.renderFrame();
@@ -119,6 +130,9 @@ export class InteractionHandler {
       case 'delete':
         this.handleDelete(hits);
         break;
+      case 'construction':
+        this.handleToggleConstruction(hits);
+        break;
       case 'point':
         this.handleAddPoint(wx, wy);
         break;
@@ -138,6 +152,12 @@ export class InteractionHandler {
     }
   }
 
+  private handleToggleConstruction(hits: HitResult[]): void {
+    if (hits.length === 0) return;
+    this.doc.toggleConstruction(hits[0].entity.id);
+    this.renderFrame();
+  }
+
   private onMouseMove(e: MouseEvent): void {
     const [wx, wy] = this.getMouseWorld(e);
     this.mouseWorld = [wx, wy];
@@ -155,11 +175,43 @@ export class InteractionHandler {
       return;
     }
 
+    // Update hover for any "targeting" tool (select, delete, construction,
+    // or any constraint tool). Drawing tools (point/line/circle/arc) rely
+    // on the snap-target marker instead.
+    const targeting = this.isTargetingTool(this.tool);
+    const prevHoverKey = this.hoverKey(this.hoveredHit);
+    if (targeting) {
+      const threshold = 8 / this.renderer.zoom;
+      const hits = hitTest(this.doc.entities, this.doc.q, wx, wy, threshold, threshold);
+      this.hoveredHit = hits[0] ?? null;
+    } else {
+      this.hoveredHit = null;
+    }
+    const hoverChanged = this.hoverKey(this.hoveredHit) !== prevHoverKey;
+
     // If in a drawing tool with pending clicks, repaint for preview
     if (this.pendingClicks.length > 0 &&
         (this.tool === 'line' || this.tool === 'circle' || this.tool === 'arc')) {
       this.renderFrame();
+      return;
     }
+
+    if (hoverChanged || targeting) {
+      this.renderFrame();
+    }
+  }
+
+  private hoverKey(h: HitResult | null): string {
+    if (!h) return '';
+    return `${h.entity.id}:${h.part}`;
+  }
+
+  /** Tools where hovering over an entity gives meaningful feedback */
+  private isTargetingTool(tool: ToolMode): boolean {
+    if (tool === 'select' || tool === 'delete' || tool === 'construction') return true;
+    if (tool === 'point' || tool === 'line' || tool === 'circle' || tool === 'arc') return false;
+    if (tool === 'save' || tool === 'load') return false;
+    return true; // any ConstraintType
   }
 
   private onMouseUp(_e: MouseEvent): void {
@@ -226,13 +278,31 @@ export class InteractionHandler {
       }
 
       if (this.isDragging && this.dragGrabVars) {
-        this.doc.startDrag(this.dragGrabVars[0], this.dragGrabVars[1]);
+        // When dragging a line endpoint, temporarily pin the OTHER endpoint
+        // so the line rotates/stretches around its anchor instead of
+        // translating the whole line.
+        const tempFixed = this.computeTempFixedForDrag(hit);
+        this.doc.startDrag(this.dragGrabVars[0], this.dragGrabVars[1], tempFixed);
       }
     } else {
       this.selectedEntities = [];
     }
     this.updateStatus();
     this.renderFrame();
+  }
+
+  /**
+   * When grabbing a specific sub-part of an entity, return the list of
+   * variable indices to temporarily pin for the duration of the drag.
+   * For a line endpoint: pin the opposite endpoint.
+   */
+  private computeTempFixedForDrag(hit: HitResult): number[] {
+    const e = hit.entity;
+    if (e.type === 'line') {
+      if (hit.part === 'p1') return [e.vars[2], e.vars[3]];
+      if (hit.part === 'p2') return [e.vars[0], e.vars[1]];
+    }
+    return [];
   }
 
   private handleDelete(hits: HitResult[]): void {
@@ -508,6 +578,8 @@ export class InteractionHandler {
       constrainedVars,
       drawingPreview: this.getDrawingPreview(),
       snapTarget: this.getSnapTarget(),
+      hoveredEntityId: this.hoveredHit?.entity.id ?? null,
+      hoveredPart: this.hoveredHit?.part ?? null,
     };
     this.renderer.render(state);
     this.updateStatus();
