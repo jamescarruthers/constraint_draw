@@ -580,6 +580,72 @@ export class SketchDocument {
   /** Variables temporarily pinned for the duration of the current drag */
   private tempFixedVars: number[] = [];
 
+  /**
+   * World-space threshold below which an entity is considered "degenerate"
+   * (collapsed line, zero-radius circle/arc, zero-dimension ellipse axis).
+   * Drag steps that would push a previously-non-degenerate entity below
+   * this are rejected so the line can't visually collapse to a point.
+   */
+  private readonly COLLAPSE_THRESHOLD = 0.5;
+
+  /**
+   * Return true if `newQ` contains an entity that has newly become
+   * degenerate (collapsed) compared to `oldQ`. Entities that were already
+   * degenerate in `oldQ` are ignored — only *new* collapses matter, so
+   * the caller doesn't get stuck if the sketch was already in a bad
+   * state.
+   */
+  private hasNewDegenerateEntity(oldQ: Vec, newQ: Vec): boolean {
+    const thr = this.COLLAPSE_THRESHOLD;
+    const thr2 = thr * thr;
+
+    for (const entity of this.entities) {
+      const v = entity.vars;
+      switch (entity.type) {
+        case 'line': {
+          const dxO = oldQ[v[2]] - oldQ[v[0]];
+          const dyO = oldQ[v[3]] - oldQ[v[1]];
+          const dxN = newQ[v[2]] - newQ[v[0]];
+          const dyN = newQ[v[3]] - newQ[v[1]];
+          if (dxN * dxN + dyN * dyN < thr2 && dxO * dxO + dyO * dyO >= thr2) {
+            return true;
+          }
+          break;
+        }
+        case 'circle': {
+          const rO = Math.abs(oldQ[v[2]]);
+          const rN = Math.abs(newQ[v[2]]);
+          if (rN < thr && rO >= thr) return true;
+          break;
+        }
+        case 'arc': {
+          // Arc has both a canonical radius and explicit endpoint coords.
+          const rO = Math.abs(oldQ[v[2]]);
+          const rN = Math.abs(newQ[v[2]]);
+          if (rN < thr && rO >= thr) return true;
+          // Also protect the explicit start/end points from coinciding.
+          const sxO = oldQ[v[5]], syO = oldQ[v[6]];
+          const exO = oldQ[v[7]], eyO = oldQ[v[8]];
+          const sxN = newQ[v[5]], syN = newQ[v[6]];
+          const exN = newQ[v[7]], eyN = newQ[v[8]];
+          const chordO2 = (exO - sxO) ** 2 + (eyO - syO) ** 2;
+          const chordN2 = (exN - sxN) ** 2 + (eyN - syN) ** 2;
+          if (chordN2 < thr2 && chordO2 >= thr2) return true;
+          break;
+        }
+        case 'ellipse': {
+          const rxO = Math.abs(oldQ[v[2]]);
+          const ryO = Math.abs(oldQ[v[3]]);
+          const rxN = Math.abs(newQ[v[2]]);
+          const ryN = Math.abs(newQ[v[3]]);
+          if ((rxN < thr || ryN < thr) && rxO >= thr && ryO >= thr) return true;
+          break;
+        }
+      }
+    }
+    return false;
+  }
+
   startDrag(
     _grabVarX: number,
     _grabVarY: number,
@@ -598,13 +664,19 @@ export class SketchDocument {
       for (const v of this.tempFixedVars) effectiveFixed.add(v);
     }
 
-    this.q = this.dragIntegrator.stepSimple(
+    const candidate = this.dragIntegrator.stepSimple(
       this.q,
       this.constraints,
       effectiveFixed,
       grabVars,
       cursor
     );
+
+    // Reject the step if it would make a previously-OK line/arc/circle/
+    // ellipse collapse to a degenerate state. The drag will appear to
+    // "stick" at the collapse boundary rather than blowing past it.
+    if (this.hasNewDegenerateEntity(this.q, candidate)) return;
+    this.q = candidate;
   }
 
   endDrag(): void {
@@ -624,6 +696,7 @@ export class SketchDocument {
     newP1: [number, number],
     newP2: [number, number]
   ): void {
+    const savedQ = [...this.q];
     const v = line.vars;
     this.q[v[0]] = newP1[0];
     this.q[v[1]] = newP1[1];
@@ -642,6 +715,13 @@ export class SketchDocument {
     this.q = result.q;
     this.lastSolveMs = performance.now() - t0;
     this.state = 'dragging';
+
+    // If the solve collapsed some other entity to satisfy the rigid
+    // translation, revert so the drag gets "stuck" rather than
+    // corrupting geometry.
+    if (this.hasNewDegenerateEntity(savedQ, this.q)) {
+      this.q = savedQ;
+    }
   }
 
   // ─── Construction Toggle ───────────────────────────────────────
