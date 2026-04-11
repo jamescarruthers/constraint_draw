@@ -129,13 +129,7 @@ function createDemoSketch(doc: SketchDocument): void {
 
   // Join corners: l1.p2 = l2.p1, l2.p2 = l3.p1, l3.p2 = l4.p1, l4.p2 = l1.p1
   const join = (a: typeof l1, aEnd: 'p1' | 'p2', b: typeof l1, bEnd: 'p1' | 'p2') => {
-    const av: [number, number] = aEnd === 'p1'
-      ? [a.vars[0], a.vars[1]]
-      : [a.vars[2], a.vars[3]];
-    const bv: [number, number] = bEnd === 'p1'
-      ? [b.vars[0], b.vars[1]]
-      : [b.vars[2], b.vars[3]];
-    doc.addConstraint('coincident', [a.id, b.id], [], undefined, [av, bv]);
+    doc.addConstraint('coincident', [a.id, b.id], [], undefined, [aEnd, bEnd]);
   };
 
   join(l1, 'p2', l2, 'p1');

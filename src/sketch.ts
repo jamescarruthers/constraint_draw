@@ -24,6 +24,7 @@ import {
   HorizontalDistConstraint,
   VerticalDistConstraint,
   ArcEndpointCouplingConstraint,
+  resolveSubPart,
 } from './core/constraint';
 import { NRSolver } from './core/solver';
 import { DOFAnalyser } from './core/dof';
@@ -131,19 +132,30 @@ export class SketchDocument {
     params: number[] = [],
     id?: string,
     /**
-     * Optional per-entity overrides for the "point vars" used by constraints
-     * like coincident, midpoint, point-on-line, etc. When provided for a given
-     * entity slot, those variable indices are used instead of the default
-     * (which picks the first endpoint/center). This lets callers express
-     * intent like "the p2 endpoint of this line".
+     * Optional per-entity sub-part labels ('p1', 'p2', 'center', or null).
+     * Identifies which point-like part of each entity the constraint
+     * attaches to. Used by constraints like coincident/midpoint/pointOnLine
+     * that take a point-like slot from any entity. Stored on the created
+     * constraint so the sub-part intent survives save/load and undo/redo.
      */
-    pointVarOverrides?: (([number, number] | null) | undefined)[]
+    subParts?: (string | null)[]
   ): BaseConstraint | null {
     const entities = entityIds.map(eid => this.getEntity(eid)).filter(Boolean) as Entity[];
     if (entities.length !== entityIds.length) return null;
 
+    // Translate sub-part labels into absolute [x, y] var overrides for the
+    // constraint factory.
+    const pointVarOverrides = subParts?.map((sp, i) => {
+      const ent = entities[i];
+      return ent ? resolveSubPart(ent, sp) : null;
+    });
+
     const constraint = this.createConstraint(type, entities, params, id, pointVarOverrides);
     if (!constraint) return null;
+
+    if (subParts && subParts.some(sp => sp != null)) {
+      constraint.subParts = [...subParts];
+    }
 
     this.constraints.push(constraint);
     this.markDirty();
@@ -187,8 +199,22 @@ export class SketchDocument {
     const entities = newEntityIds.map(eid => this.getEntity(eid)).filter(Boolean) as Entity[];
     if (entities.length !== newEntityIds.length) return false;
 
-    const rebuilt = this.createConstraint(old.type, entities, [...old.params], old.id);
+    // Preserve the existing sub-part labels for untouched slots; clear the
+    // reassigned slot so the new entity's default sub-part is used.
+    const newSubParts = old.subParts ? [...old.subParts] : undefined;
+    if (newSubParts) newSubParts[slotIndex] = null;
+
+    const overrides = newSubParts?.map((sp, i) => {
+      const ent = entities[i];
+      return ent ? resolveSubPart(ent, sp) : null;
+    });
+
+    const rebuilt = this.createConstraint(old.type, entities, [...old.params], old.id, overrides);
     if (!rebuilt) return false;
+
+    if (newSubParts && newSubParts.some(sp => sp != null)) {
+      rebuilt.subParts = newSubParts;
+    }
 
     this.constraints[idx] = rebuilt;
     this.markDirty();
@@ -600,6 +626,7 @@ export class SketchDocument {
           type: c.type,
           entities: c.entityIds,
           params: c.params,
+          subParts: c.subParts ?? null,
         })),
     };
   }
@@ -631,7 +658,13 @@ export class SketchDocument {
     }
 
     for (const c of data.constraints) {
-      this.addConstraint(c.type, c.entities, c.params || [], c.id);
+      this.addConstraint(
+        c.type,
+        c.entities,
+        c.params || [],
+        c.id,
+        c.subParts ?? undefined
+      );
     }
 
     this.solve();
