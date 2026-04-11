@@ -41,6 +41,21 @@ function main(): void {
         doc.solve();
         handler.renderFrame();
       },
+      onEditConstraintValue: (id, value) => {
+        doc.updateConstraintParams(id, [value]);
+        doc.solve();
+        handler.renderFrame();
+      },
+      onReassignConstraint: (id, slot, newEntityId) => {
+        doc.reassignConstraintEntity(id, slot, newEntityId);
+        doc.solve();
+        handler.renderFrame();
+      },
+      onRenameEntity: (oldId, newId) => {
+        const ok = doc.renameEntity(oldId, newId);
+        if (ok) handler.renderFrame();
+        return ok;
+      },
     });
   };
 

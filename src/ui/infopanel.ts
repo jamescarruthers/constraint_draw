@@ -8,7 +8,7 @@ import {
   getPointPos,
 } from '../core/entity';
 import { BaseConstraint } from '../core/constraint';
-import { ConstraintType, Vec } from '../core/types';
+import { ConstraintType, EntityType, Vec } from '../core/types';
 import { SketchDocument } from '../sketch';
 
 /**
@@ -17,6 +17,14 @@ import { SketchDocument } from '../sketch';
  * and the constraints that touch each sub-part of the entity, grouped by
  * endpoint / center / body. When nothing is selected, shows a short
  * sketch summary instead.
+ *
+ * Supports inline editing of:
+ *   - Entity ids (rename)
+ *   - Dimensional constraint values (length, angle, radius, distances)
+ *   - The "other entity" slot of relational constraints via a dropdown
+ *
+ * While an input or select inside the panel has focus, the panel refuses
+ * to rebuild so the user's edit isn't destroyed by drag/solve updates.
  */
 
 /** Human-readable label for each constraint type */
@@ -47,18 +55,35 @@ const CONSTRAINT_LABELS: Partial<Record<ConstraintType, string>> = {
   verticalDist: 'Vertical dist',
 };
 
+/** Constraint types whose single parameter is an angle in radians */
+const ANGULAR_DIM_TYPES: ConstraintType[] = ['fixedAngle', 'angleBetween'];
+
+/** Constraint types that have a user-editable scalar dimension */
+const DIMENSIONAL_TYPES: ConstraintType[] = [
+  'fixedLength',
+  'fixedAngle',
+  'angleBetween',
+  'fixedRadius',
+  'horizontalDist',
+  'verticalDist',
+];
+
 /** A named slot on an entity that constraints can attach to */
 interface SubPart {
-  /** Display label, e.g. "Endpoint 1" */
   label: string;
-  /** Variable indices owned by this sub-part */
   varIndices: number[];
-  /** Leaf sub-parts are endpoints/centers; non-leaf is the whole-entity bucket */
   isLeaf: boolean;
 }
 
 export interface InfoPanelCallbacks {
   onDeleteConstraint: (constraintId: string) => void;
+  onEditConstraintValue: (constraintId: string, rawValue: number) => void;
+  onReassignConstraint: (
+    constraintId: string,
+    slotIndex: number,
+    newEntityId: string
+  ) => void;
+  onRenameEntity: (oldId: string, newId: string) => boolean;
 }
 
 export function renderInfoPanel(
@@ -67,6 +92,17 @@ export function renderInfoPanel(
   selected: Entity[],
   callbacks: InfoPanelCallbacks
 ): void {
+  // While the user is editing a value inside the panel, don't destroy
+  // the input. Skip the rebuild until focus leaves.
+  const active = document.activeElement;
+  if (
+    active &&
+    container.contains(active) &&
+    (active instanceof HTMLInputElement || active instanceof HTMLSelectElement)
+  ) {
+    return;
+  }
+
   if (selected.length === 0) {
     container.innerHTML = renderSummary(doc);
     return;
@@ -78,18 +114,13 @@ export function renderInfoPanel(
   }
   container.innerHTML = parts.join('');
 
-  // Wire up the delete buttons once the DOM is in place
-  container.querySelectorAll<HTMLButtonElement>('.constraint-delete').forEach(btn => {
-    btn.addEventListener('click', e => {
-      e.stopPropagation();
-      const id = btn.dataset.constraintId;
-      if (id) callbacks.onDeleteConstraint(id);
-    });
-  });
+  wireUpEntityRenames(container, doc, callbacks);
+  wireUpConstraintDeletes(container, callbacks);
+  wireUpConstraintEdits(container, callbacks);
+  wireUpConstraintReassignments(container, callbacks);
 }
 
 function renderSummary(doc: SketchDocument): string {
-  // Count constraints excluding internal coupling constraints
   const visibleConstraintCount = doc.constraints.filter(
     c => c.type !== 'arcEndpointCoupling'
   ).length;
@@ -109,10 +140,13 @@ function renderEntityCard(entity: Entity, doc: SketchDocument): string {
   const parts: string[] = [];
   parts.push('<div class="entity-card">');
 
-  // Header: type badge + id + construction badge
+  // Header: type badge + editable id + construction badge
   parts.push('<div class="entity-header">');
   parts.push(`<span class="entity-type">${entity.type}</span>`);
-  parts.push(`<span class="entity-id">${escapeHtml(entity.id)}</span>`);
+  parts.push(
+    `<input type="text" class="entity-id-input" value="${escapeAttr(entity.id)}" ` +
+      `data-old-id="${escapeAttr(entity.id)}" spellcheck="false" />`
+  );
   if (entity.construction) {
     parts.push('<span class="entity-construction">CONSTRUCTION</span>');
   }
@@ -145,7 +179,6 @@ function renderEntityConstraints(entity: Entity, doc: SketchDocument): string {
     if (c.type === 'arcEndpointCoupling') continue;
     if (!c.entityIds.includes(entity.id)) continue;
 
-    // Figure out which of this entity's leaf sub-parts the constraint touches
     const entries = c.jacobianEntries(doc.q, 0);
     const touchedVars = new Set(entries.map(e => e.col));
 
@@ -156,11 +189,8 @@ function renderEntityConstraints(entity: Entity, doc: SketchDocument): string {
 
     let targetLabel: string;
     if (touchedLeaves.length === 1) {
-      // Exactly one leaf: constraint belongs to that sub-part
       targetLabel = touchedLeaves[0].label;
     } else {
-      // Multi-leaf (e.g., horizontal touches both line endpoints) — goes under
-      // the whole-entity bucket
       const whole = subParts.find(sp => !sp.isLeaf);
       targetLabel = whole?.label ?? subParts[0].label;
     }
@@ -175,13 +205,7 @@ function renderEntityConstraints(entity: Entity, doc: SketchDocument): string {
     hasAny = true;
     parts.push(`<div class="group-label">${escapeHtml(sp.label)}</div>`);
     for (const c of constraints) {
-      const desc = describeConstraint(c, entity, doc.entities);
-      parts.push('<div class="constraint-line">');
-      parts.push(`<span class="constraint-desc">${escapeHtml(desc)}</span>`);
-      parts.push(
-        `<button class="constraint-delete" data-constraint-id="${escapeHtml(c.id)}" title="Remove constraint">×</button>`
-      );
-      parts.push('</div>');
+      parts.push(renderConstraintLine(c, entity, doc));
     }
   }
   if (!hasAny) {
@@ -190,31 +214,138 @@ function renderEntityConstraints(entity: Entity, doc: SketchDocument): string {
   return parts.join('');
 }
 
-function describeConstraint(
+function renderConstraintLine(
+  c: BaseConstraint,
+  entity: Entity,
+  doc: SketchDocument
+): string {
+  const parts: string[] = ['<div class="constraint-line">'];
+  const label = CONSTRAINT_LABELS[c.type] ?? c.type;
+
+  if (isDimensional(c.type)) {
+    // Editable dimensional: label + input + unit + delete
+    const isAngle = isAngular(c.type);
+    const rawValue = c.params[0] ?? 0;
+    const displayValue = isAngle
+      ? ((rawValue * 180) / Math.PI).toFixed(2)
+      : rawValue.toFixed(2);
+    const step = isAngle ? '0.1' : '0.01';
+    parts.push(`<span class="constraint-label">${escapeHtml(label)}</span>`);
+    parts.push(
+      `<input type="number" class="constraint-value-input" ` +
+        `value="${displayValue}" step="${step}" ` +
+        `data-constraint-id="${escapeAttr(c.id)}" ` +
+        `data-is-angle="${isAngle}" />`
+    );
+    if (isAngle) parts.push('<span class="constraint-value-unit">°</span>');
+  } else {
+    // Non-dimensional: plain label, possibly followed by a reassignment dropdown
+    const others = c.entityIds
+      .map((eid, idx) => ({ eid, idx }))
+      .filter(x => x.eid !== entity.id);
+
+    if (others.length === 1 && supportsReassignment(c.type)) {
+      // Relational with a single "other" slot → dropdown
+      const { eid: otherId, idx: otherIdx } = others[0];
+      const compatible = getCompatibleEntityTypes(c.type, otherIdx);
+      const candidates = doc.entities.filter(
+        e => e.id !== entity.id && compatible.includes(e.type)
+      );
+      parts.push(`<span class="constraint-label">${escapeHtml(label)} with</span>`);
+      parts.push(
+        `<select class="constraint-reassign" ` +
+          `data-constraint-id="${escapeAttr(c.id)}" ` +
+          `data-slot-index="${otherIdx}">`
+      );
+      // Include current selection even if it doesn't match the filter
+      const ensured = candidates.some(e => e.id === otherId)
+        ? candidates
+        : candidates.concat(doc.entities.filter(e => e.id === otherId));
+      for (const cand of ensured) {
+        const sel = cand.id === otherId ? ' selected' : '';
+        parts.push(`<option value="${escapeAttr(cand.id)}"${sel}>${escapeHtml(cand.id)}</option>`);
+      }
+      parts.push('</select>');
+    } else {
+      // Plain description with any "with <others>" list
+      parts.push(
+        `<span class="constraint-desc">${escapeHtml(describePlain(c, entity, doc.entities))}</span>`
+      );
+    }
+  }
+
+  parts.push(
+    `<button class="constraint-delete" data-constraint-id="${escapeAttr(c.id)}" title="Remove constraint">×</button>`
+  );
+  parts.push('</div>');
+  return parts.join('');
+}
+
+function describePlain(
   c: BaseConstraint,
   entity: Entity,
   allEntities: Entity[]
 ): string {
   const label = CONSTRAINT_LABELS[c.type] ?? c.type;
   const others = c.entityIds.filter(id => id !== entity.id);
+  if (others.length === 0) return label;
+  const names = others
+    .map(id => allEntities.find(x => x.id === id)?.id ?? '?')
+    .join(', ');
+  return `${label} with ${names}`;
+}
 
-  // Dimensional constraints show their parameter value
-  if (c.params.length > 0) {
-    const val = c.params[0];
-    if (c.type === 'fixedAngle' || c.type === 'angleBetween') {
-      return `${label} = ${deg(val)}`;
-    }
-    return `${label} = ${f(val)}`;
+function isDimensional(type: ConstraintType): boolean {
+  return DIMENSIONAL_TYPES.includes(type);
+}
+
+function isAngular(type: ConstraintType): boolean {
+  return ANGULAR_DIM_TYPES.includes(type);
+}
+
+function supportsReassignment(type: ConstraintType): boolean {
+  return [
+    'coincident',
+    'parallel',
+    'perpendicular',
+    'collinear',
+    'equalLength',
+    'equalRadius',
+    'concentric',
+    'tangentLineCircle',
+    'tangentCircleCircle',
+    'pointOnLine',
+    'pointOnCircle',
+    'midpoint',
+  ].includes(type);
+}
+
+function getCompatibleEntityTypes(
+  type: ConstraintType,
+  slotIdx: number
+): EntityType[] {
+  switch (type) {
+    case 'coincident':
+      return ['point', 'line', 'circle', 'arc'];
+    case 'parallel':
+    case 'perpendicular':
+    case 'collinear':
+    case 'equalLength':
+      return ['line'];
+    case 'equalRadius':
+    case 'concentric':
+    case 'tangentCircleCircle':
+      return ['circle', 'arc'];
+    case 'tangentLineCircle':
+      return slotIdx === 0 ? ['line'] : ['circle', 'arc'];
+    case 'pointOnLine':
+    case 'midpoint':
+      return slotIdx === 0 ? ['point', 'line', 'arc'] : ['line'];
+    case 'pointOnCircle':
+      return slotIdx === 0 ? ['point', 'line', 'arc'] : ['circle', 'arc'];
+    default:
+      return [];
   }
-
-  if (others.length > 0) {
-    const names = others
-      .map(id => allEntities.find(x => x.id === id)?.id ?? '?')
-      .join(', ');
-    return `${label} with ${names}`;
-  }
-
-  return label;
 }
 
 function getEntityDetails(entity: Entity, q: Vec): string[] {
@@ -270,9 +401,7 @@ function getEntitySubParts(entity: Entity): SubPart[] {
   const v = entity.vars;
   switch (entity.type) {
     case 'point':
-      return [
-        { label: 'Point', varIndices: [v[0], v[1]], isLeaf: true },
-      ];
+      return [{ label: 'Point', varIndices: [v[0], v[1]], isLeaf: true }];
     case 'line':
       return [
         { label: 'Endpoint 1', varIndices: [v[0], v[1]], isLeaf: true },
@@ -299,6 +428,100 @@ function getEntitySubParts(entity: Entity): SubPart[] {
   }
 }
 
+// ─── Event wiring ─────────────────────────────────────────────
+
+function wireUpEntityRenames(
+  container: HTMLElement,
+  doc: SketchDocument,
+  callbacks: InfoPanelCallbacks
+): void {
+  container.querySelectorAll<HTMLInputElement>('.entity-id-input').forEach(input => {
+    const commit = () => {
+      const oldId = input.dataset.oldId ?? '';
+      const newId = input.value.trim();
+      if (!newId || newId === oldId) {
+        input.value = oldId;
+        input.classList.remove('invalid');
+        return;
+      }
+      const ok = callbacks.onRenameEntity(oldId, newId);
+      if (!ok) {
+        input.classList.add('invalid');
+        input.value = oldId;
+        setTimeout(() => input.classList.remove('invalid'), 800);
+      }
+    };
+
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        input.blur();
+      } else if (e.key === 'Escape') {
+        input.value = input.dataset.oldId ?? '';
+        input.blur();
+      }
+    });
+    input.addEventListener('blur', commit);
+  });
+}
+
+function wireUpConstraintDeletes(
+  container: HTMLElement,
+  callbacks: InfoPanelCallbacks
+): void {
+  container.querySelectorAll<HTMLButtonElement>('.constraint-delete').forEach(btn => {
+    btn.addEventListener('click', e => {
+      e.stopPropagation();
+      const id = btn.dataset.constraintId;
+      if (id) callbacks.onDeleteConstraint(id);
+    });
+  });
+}
+
+function wireUpConstraintEdits(
+  container: HTMLElement,
+  callbacks: InfoPanelCallbacks
+): void {
+  container.querySelectorAll<HTMLInputElement>('.constraint-value-input').forEach(input => {
+    const commit = () => {
+      const id = input.dataset.constraintId;
+      if (!id) return;
+      const raw = parseFloat(input.value);
+      if (!Number.isFinite(raw)) return;
+      const isAngle = input.dataset.isAngle === 'true';
+      const value = isAngle ? (raw * Math.PI) / 180 : raw;
+      callbacks.onEditConstraintValue(id, value);
+    };
+
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        input.blur();
+      } else if (e.key === 'Escape') {
+        input.blur();
+      }
+    });
+    input.addEventListener('change', commit);
+    input.addEventListener('blur', commit);
+  });
+}
+
+function wireUpConstraintReassignments(
+  container: HTMLElement,
+  callbacks: InfoPanelCallbacks
+): void {
+  container.querySelectorAll<HTMLSelectElement>('.constraint-reassign').forEach(sel => {
+    sel.addEventListener('change', () => {
+      const id = sel.dataset.constraintId;
+      const slot = sel.dataset.slotIndex;
+      if (!id || slot == null) return;
+      callbacks.onReassignConstraint(id, parseInt(slot, 10), sel.value);
+    });
+  });
+}
+
+// ─── Formatting helpers ───────────────────────────────────────
+
 function f(n: number, digits = 2): string {
   if (!Number.isFinite(n)) return '—';
   return n.toFixed(digits);
@@ -307,7 +530,6 @@ function f(n: number, digits = 2): string {
 function deg(rad: number): string {
   if (!Number.isFinite(rad)) return '—';
   let d = (rad * 180) / Math.PI;
-  // Normalize to [-180, 180] for readability
   while (d > 180) d -= 360;
   while (d < -180) d += 360;
   return `${d.toFixed(1)}°`;
@@ -319,4 +541,8 @@ function escapeHtml(s: string): string {
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;');
+}
+
+function escapeAttr(s: string): string {
+  return escapeHtml(s);
 }
