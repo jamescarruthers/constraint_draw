@@ -514,26 +514,172 @@ export class Renderer {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
 
+    // Bucket icon positions so overlapping icons stack vertically instead
+    // of drawing on top of each other.
+    const used = new Map<string, number>();
+
     for (const constraint of state.constraints) {
       const symbol = CONSTRAINT_SYMBOLS[constraint.type];
       if (!symbol) continue;
 
-      const positions: [number, number][] = [];
-      for (const eid of constraint.entityIds) {
-        const entity = state.entities.find(e => e.id === eid);
-        if (!entity) continue;
-        positions.push(this.getEntityCenter(entity, state.q));
-      }
-      if (positions.length === 0) continue;
+      const world = this.getConstraintIconPos(constraint, state);
+      if (!world) continue;
 
-      const avgX = positions.reduce((s, p) => s + p[0], 0) / positions.length;
-      const avgY = positions.reduce((s, p) => s + p[1], 0) / positions.length;
-      const [sx, sy] = this.worldToScreen(avgX, avgY);
+      let [sx, sy] = this.worldToScreen(world[0], world[1]);
 
-      const offset = 15;
-      ctx.fillStyle = COLORS.constraintIcon;
-      ctx.fillText(symbol, sx + offset, sy - offset);
+      // Stack duplicate positions
+      const key = `${Math.round(sx / 4)}:${Math.round(sy / 4)}`;
+      const stackIdx = used.get(key) ?? 0;
+      used.set(key, stackIdx + 1);
+      sy += stackIdx * 16;
+
+      this.drawIconPill(sx, sy, symbol);
     }
+  }
+
+  /** Draw a constraint icon with a dark rounded background for readability */
+  private drawIconPill(sx: number, sy: number, symbol: string): void {
+    const ctx = this.ctx;
+    const padX = 4;
+    const padY = 2;
+    const metrics = ctx.measureText(symbol);
+    const textW = metrics.width;
+    const textH = 12;
+    const w = textW + padX * 2;
+    const h = textH + padY * 2;
+
+    const radius = 4;
+    const x = sx - w / 2;
+    const y = sy - h / 2;
+
+    ctx.fillStyle = 'rgba(15, 20, 40, 0.85)';
+    ctx.strokeStyle = COLORS.constraintIcon;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x + radius, y);
+    ctx.lineTo(x + w - radius, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+    ctx.lineTo(x + w, y + h - radius);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+    ctx.lineTo(x + radius, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+    ctx.lineTo(x, y + radius);
+    ctx.quadraticCurveTo(x, y, x + radius, y);
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = COLORS.constraintIcon;
+    ctx.fillText(symbol, sx, sy);
+  }
+
+  /**
+   * Compute a sensible world-space anchor for a constraint's icon.
+   * Different constraint types favour different anchors:
+   *   - horizontal/vertical/fixedLength/fixedAngle on a line: line midpoint
+   *   - fixedRadius/concentric: near circle edge
+   *   - coincident/midpoint/fixed: at the shared point
+   *   - parallel/perpendicular/equalLength: midpoint of both line midpoints
+   *   - tangent: midway between circle edge and line
+   *   - point-on-*: at the point
+   */
+  private getConstraintIconPos(
+    constraint: BaseConstraint,
+    state: RenderState
+  ): [number, number] | null {
+    const q = state.q;
+    const entities = constraint.entityIds
+      .map(id => state.entities.find(e => e.id === id))
+      .filter((e): e is Entity => !!e);
+    if (entities.length === 0) return null;
+
+    const type = constraint.type;
+    const e0 = entities[0];
+    const e1 = entities[1];
+
+    if ((type === 'horizontal' || type === 'vertical' ||
+         type === 'fixedLength' || type === 'fixedAngle') &&
+        e0 && e0.type === 'line') {
+      return this.lineMidpoint(e0, q);
+    }
+
+    if (type === 'coincident' || type === 'midpoint' || type === 'fixed') {
+      // Use the first point-like entity / endpoint / center
+      return this.getEntityCenter(e0, q);
+    }
+
+    if (type === 'fixedRadius' && e0 &&
+        (e0.type === 'circle' || e0.type === 'arc')) {
+      const cx = q[e0.vars[0]];
+      const cy = q[e0.vars[1]];
+      const r = Math.abs(q[e0.vars[2]]);
+      // Place on the edge at 45° (up-right)
+      const off = Math.SQRT1_2 * r;
+      return [cx + off, cy - off];
+    }
+
+    if ((type === 'equalRadius' || type === 'concentric' ||
+         type === 'tangentCircleCircle') && e0 && e1) {
+      return this.midOf([this.getEntityCenter(e0, q), this.getEntityCenter(e1, q)]);
+    }
+
+    if ((type === 'parallel' || type === 'perpendicular' ||
+         type === 'collinear' || type === 'equalLength' ||
+         type === 'angleBetween') &&
+        e0 && e0.type === 'line' && e1 && e1.type === 'line') {
+      return this.midOf([this.lineMidpoint(e0, q), this.lineMidpoint(e1, q)]);
+    }
+
+    if (type === 'tangentLineCircle' && e0 && e1) {
+      const line = e0.type === 'line' ? e0 : e1;
+      const circ = e0.type === 'line' ? e1 : e0;
+      if (line.type === 'line' && (circ.type === 'circle' || circ.type === 'arc')) {
+        // Foot of perpendicular from centre onto line
+        return this.footOnLine(circ, line, q);
+      }
+    }
+
+    if ((type === 'pointOnLine' || type === 'pointOnCircle') && e0) {
+      // First entity is the point (or point-like)
+      return this.getEntityCenter(e0, q);
+    }
+
+    if ((type === 'horizontalDist' || type === 'verticalDist') && e0 && e1) {
+      return this.midOf([this.getEntityCenter(e0, q), this.getEntityCenter(e1, q)]);
+    }
+
+    // Default: centroid of entity centres
+    const avg = entities.reduce<[number, number]>(
+      (acc, e) => {
+        const p = this.getEntityCenter(e, q);
+        return [acc[0] + p[0], acc[1] + p[1]];
+      },
+      [0, 0]
+    );
+    return [avg[0] / entities.length, avg[1] / entities.length];
+  }
+
+  private lineMidpoint(line: Entity, q: Vec): [number, number] {
+    const v = line.vars;
+    return [(q[v[0]] + q[v[2]]) / 2, (q[v[1]] + q[v[3]]) / 2];
+  }
+
+  private midOf(points: [number, number][]): [number, number] {
+    const n = points.length;
+    let x = 0, y = 0;
+    for (const p of points) { x += p[0]; y += p[1]; }
+    return [x / n, y / n];
+  }
+
+  private footOnLine(circle: Entity, line: Entity, q: Vec): [number, number] {
+    const cx = q[circle.vars[0]], cy = q[circle.vars[1]];
+    const x1 = q[line.vars[0]], y1 = q[line.vars[1]];
+    const x2 = q[line.vars[2]], y2 = q[line.vars[3]];
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-10) return [x1, y1];
+    const t = ((cx - x1) * dx + (cy - y1) * dy) / len2;
+    return [x1 + t * dx, y1 + t * dy];
   }
 
   private getEntityCenter(entity: Entity, q: Vec): [number, number] {
