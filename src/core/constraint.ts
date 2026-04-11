@@ -914,6 +914,82 @@ export class VerticalDistConstraint extends BaseConstraint {
   }
 }
 
+/**
+ * Perpendicular distance from a point to a line.
+ *
+ * Enforces signed distance = d where
+ *   cross = (px - x1)(y2 - y1) - (py - y1)(x2 - x1)
+ *   |L|   = sqrt((x2 - x1)^2 + (y2 - y1)^2)
+ *   C     = cross - d * |L|
+ *
+ * i.e. cross / |L| = d. The sign of d distinguishes which side of the
+ * line the point lies on. Combining this with a Parallel constraint
+ * makes two lines stay a fixed perpendicular distance apart.
+ */
+export class PerpDistanceConstraint extends BaseConstraint {
+  readonly type = 'perpDistance' as const;
+  readonly dof = 1;
+
+  constructor(
+    private px: number, private py: number,
+    private x1: number, private y1: number,
+    private x2: number, private y2: number,
+    private dist: number,
+    entityIds: string[], id?: string
+  ) {
+    super(entityIds, [dist], id);
+  }
+
+  evaluate(q: Vec): Vec {
+    const px = q[this.px], py = q[this.py];
+    const x1 = q[this.x1], y1 = q[this.y1];
+    const x2 = q[this.x2], y2 = q[this.y2];
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-20) return [0];
+    const len = Math.sqrt(len2);
+    const cross = (px - x1) * dy - (py - y1) * dx;
+    return [cross - this.dist * len];
+  }
+
+  jacobianEntries(q: Vec, row: number): SparseEntry[] {
+    const px = q[this.px], py = q[this.py];
+    const x1 = q[this.x1], y1 = q[this.y1];
+    const x2 = q[this.x2], y2 = q[this.y2];
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1e-20) return [];
+    const len = Math.sqrt(len2);
+    const d = this.dist;
+
+    // C = cross - d*|L|
+    // ∂cross/∂var:
+    //   ∂/∂px = dy
+    //   ∂/∂py = -dx
+    //   ∂/∂x1 = py - y2
+    //   ∂/∂y1 = x2 - px
+    //   ∂/∂x2 = y1 - py
+    //   ∂/∂y2 = px - x1
+    // ∂|L|/∂var (px,py are 0):
+    //   ∂/∂x1 = -dx/|L|,  ∂/∂y1 = -dy/|L|
+    //   ∂/∂x2 =  dx/|L|,  ∂/∂y2 =  dy/|L|
+
+    return [
+      { row, col: this.px, val: dy },
+      { row, col: this.py, val: -dx },
+      { row, col: this.x1, val: (py - y2) - d * (-dx / len) },
+      { row, col: this.y1, val: (x2 - px) - d * (-dy / len) },
+      { row, col: this.x2, val: (y1 - py) - d * (dx / len) },
+      { row, col: this.y2, val: (px - x1) - d * (dy / len) },
+    ];
+  }
+
+  setParams(params: number[]): void {
+    super.setParams(params);
+    this.dist = params[0];
+  }
+}
+
 /** Point on Ellipse: rotated-distance formula = 1 */
 export class PointOnEllipseConstraint extends BaseConstraint {
   readonly type = 'pointOnEllipse' as const;

@@ -864,6 +864,7 @@ export class InteractionHandler {
       case 'angleBetween':
       case 'horizontalDist':
       case 'verticalDist':
+      case 'perpDistance':
         return 2;
       case 'symmetric':
         return 3;
@@ -873,7 +874,15 @@ export class InteractionHandler {
   }
 
   private isDimensionalConstraint(type: ConstraintType): boolean {
-    return ['fixedLength', 'fixedAngle', 'angleBetween', 'fixedRadius', 'horizontalDist', 'verticalDist'].includes(type);
+    return [
+      'fixedLength',
+      'fixedAngle',
+      'angleBetween',
+      'fixedRadius',
+      'horizontalDist',
+      'verticalDist',
+      'perpDistance',
+    ].includes(type);
   }
 
   private getDefaultDimensionValue(type: ConstraintType, clicks: PendingClick[]): number {
@@ -912,6 +921,32 @@ export class InteractionHandler {
         const a = this.resolveClickWorldPos(clicks[0]);
         const b = this.resolveClickWorldPos(clicks[1]);
         return type === 'horizontalDist' ? b[0] - a[0] : b[1] - a[1];
+      }
+      case 'perpDistance': {
+        // Default to the current signed perpendicular distance from the
+        // first click's picked point to the second click's line.
+        if (clicks.length < 2) return 0;
+        const c0 = clicks[0], c1 = clicks[1];
+        const e0 = c0.entity, e1 = c1.entity;
+        let pos: [number, number];
+        let line: Entity | undefined;
+        if (e1?.type === 'line') {
+          pos = this.resolveClickWorldPos(c0);
+          line = e1;
+        } else if (e0?.type === 'line') {
+          pos = this.resolveClickWorldPos(c1);
+          line = e0;
+        } else {
+          return 0;
+        }
+        const v = line.vars;
+        const x1 = this.doc.q[v[0]], y1 = this.doc.q[v[1]];
+        const x2 = this.doc.q[v[2]], y2 = this.doc.q[v[3]];
+        const dx = x2 - x1, dy = y2 - y1;
+        const len = Math.hypot(dx, dy);
+        if (len < 1e-10) return 0;
+        const cross = (pos[0] - x1) * dy - (pos[1] - y1) * dx;
+        return cross / len;
       }
       case 'angleBetween':
         return Math.PI / 2;
