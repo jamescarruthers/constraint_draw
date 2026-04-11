@@ -521,6 +521,27 @@ export class SketchDocument {
     return allConverged;
   }
 
+  /**
+   * Solve with an extra set of variables temporarily pinned on top of the
+   * permanent `fixedVars`. Used when the user applies a constraint so that
+   * the "target" entity (the reference — usually the last clicked) doesn't
+   * move if it doesn't have to. Leaves `fixedVars` unchanged on exit.
+   */
+  solveWithExtraFixed(extraFixed: Iterable<number>): boolean {
+    const saved = this.fixedVars;
+    const augmented = new Set(saved);
+    for (const v of extraFixed) augmented.add(v);
+    this.fixedVars = augmented;
+    try {
+      return this.solve();
+    } finally {
+      this.fixedVars = saved;
+      // Re-run DOF analysis with the permanent fixed set so the UI isn't
+      // left reflecting the temporarily pinned state.
+      this.runDOFAnalysis();
+    }
+  }
+
   // ─── Drag Operations ───────────────────────────────────────────
 
   /** Variables temporarily pinned for the duration of the current drag */
