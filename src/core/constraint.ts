@@ -18,6 +18,16 @@ export abstract class BaseConstraint {
   abstract readonly dof: number;
   entityIds: string[];
   params: number[];
+  /**
+   * Optional per-entity sub-part label describing which point-like part of
+   * each entity the constraint attaches to (e.g. 'p1', 'p2', 'center').
+   * Used by constraints that take a sub-part of a line or arc as one of
+   * their inputs. A null entry means "use the entity's default" (which
+   * resolves to the first endpoint for a line, the center for a circle,
+   * etc.). Serialised in toJSON so the sub-part intent survives save/load
+   * and undo/redo.
+   */
+  subParts?: (string | null)[];
 
   constructor(entityIds: string[], params: number[] = [], id?: string) {
     this.id = id ?? `c_${nextConstraintId++}`;
@@ -37,6 +47,41 @@ export abstract class BaseConstraint {
    */
   setParams(params: number[]): void {
     this.params = [...params];
+  }
+}
+
+/**
+ * Resolve a sub-part label on an entity to the [x, y] variable indices.
+ * Returns null if the label doesn't apply to the entity type (caller
+ * should fall back to the default selection in that case).
+ */
+export function resolveSubPart(
+  entity: {
+    type: 'point' | 'line' | 'arc' | 'circle' | 'ellipse';
+    vars: number[];
+  },
+  subPart: string | null | undefined
+): [number, number] | null {
+  if (!subPart) return null;
+  const v = entity.vars;
+  switch (entity.type) {
+    case 'point':
+      return [v[0], v[1]];
+    case 'line':
+      if (subPart === 'p1') return [v[0], v[1]];
+      if (subPart === 'p2') return [v[2], v[3]];
+      return null;
+    case 'arc':
+      if (subPart === 'center') return [v[0], v[1]];
+      if (subPart === 'p1') return [v[5], v[6]];
+      if (subPart === 'p2') return [v[7], v[8]];
+      return null;
+    case 'circle':
+      if (subPart === 'center') return [v[0], v[1]];
+      return null;
+    case 'ellipse':
+      if (subPart === 'center') return [v[0], v[1]];
+      return null;
   }
 }
 

@@ -536,8 +536,10 @@ export class InteractionHandler {
   }
 
   /**
-   * If a line endpoint was clicked over an existing point or line endpoint,
-   * emit a coincident constraint between the new line's endpoint and that point.
+   * If a line endpoint was clicked over an existing point or line/arc
+   * endpoint, emit a coincident constraint between the new line's endpoint
+   * and that point. The constraint is tagged with sub-part labels so that
+   * save/load and undo/redo preserve which specific endpoints are joined.
    * @param endpointIdx 0 for p1, 1 for p2
    */
   private autoCoincidentEndpoint(line: Entity, endpointIdx: 0 | 1, hit?: HitResult): void {
@@ -545,31 +547,44 @@ export class InteractionHandler {
     const other = hit.entity;
     if (other.id === line.id) return;
 
-    const lineVars: [number, number] = endpointIdx === 0
-      ? [line.vars[0], line.vars[1]]
-      : [line.vars[2], line.vars[3]];
-
-    let otherVars: [number, number] | null = null;
-
-    if (other.type === 'point') {
-      otherVars = [other.vars[0], other.vars[1]];
-    } else if (other.type === 'line') {
-      if (hit.part === 'p1') otherVars = [other.vars[0], other.vars[1]];
-      else if (hit.part === 'p2') otherVars = [other.vars[2], other.vars[3]];
-    } else if (other.type === 'arc') {
-      if (hit.part === 'p1') otherVars = [other.vars[5], other.vars[6]];
-      else if (hit.part === 'p2') otherVars = [other.vars[7], other.vars[8]];
-    }
-
-    if (!otherVars) return;
+    const lineSubPart = endpointIdx === 0 ? 'p1' : 'p2';
+    const otherSubPart = this.hitToSubPart(hit);
+    if (otherSubPart === null) return;
 
     this.doc.addConstraint(
       'coincident',
       [line.id, other.id],
       [],
       undefined,
-      [lineVars, otherVars]
+      [lineSubPart, otherSubPart]
     );
+  }
+
+  /**
+   * Convert a hit result into a sub-part label suitable for
+   * addConstraint's subParts parameter, or null if the hit isn't on a
+   * point-like sub-part (e.g. a line body).
+   */
+  private hitToSubPart(hit?: HitResult): string | null {
+    if (!hit) return null;
+    const e = hit.entity;
+    if (e.type === 'point') return 'p1';
+    if (e.type === 'line') {
+      if (hit.part === 'p1') return 'p1';
+      if (hit.part === 'p2') return 'p2';
+      return null;
+    }
+    if (e.type === 'arc') {
+      if (hit.part === 'center') return 'center';
+      if (hit.part === 'p1') return 'p1';
+      if (hit.part === 'p2') return 'p2';
+      return null;
+    }
+    if (e.type === 'circle' || e.type === 'ellipse') {
+      if (hit.part === 'center') return 'center';
+      return null;
+    }
+    return null;
   }
 
   /** Return snap target position if the top hit is a point-like sub-part */
@@ -651,44 +666,32 @@ export class InteractionHandler {
     const other = hit.entity;
     if (other.id === arc.id) return;
 
-    const arcVars: [number, number] = which === 'p1'
-      ? [arc.vars[5], arc.vars[6]]
-      : [arc.vars[7], arc.vars[8]];
-
-    let otherVars: [number, number] | null = null;
-    if (other.type === 'point') {
-      otherVars = [other.vars[0], other.vars[1]];
-    } else if (other.type === 'line') {
-      if (hit.part === 'p1') otherVars = [other.vars[0], other.vars[1]];
-      else if (hit.part === 'p2') otherVars = [other.vars[2], other.vars[3]];
-    } else if (other.type === 'arc') {
-      if (hit.part === 'p1') otherVars = [other.vars[5], other.vars[6]];
-      else if (hit.part === 'p2') otherVars = [other.vars[7], other.vars[8]];
-    }
-
-    if (!otherVars) return;
+    const otherSubPart = this.hitToSubPart(hit);
+    if (otherSubPart === null) return;
 
     this.doc.addConstraint(
       'coincident',
       [arc.id, other.id],
       [],
       undefined,
-      [arcVars, otherVars]
+      [which, otherSubPart]
     );
   }
 
   private handleConstraintClick(hits: HitResult[], wx: number, wy: number): void {
     if (hits.length === 0) return;
 
-    const hit = hits[0];
+    const hit = this.pickBestHit(hits);
     this.pendingClicks.push({ wx, wy, entity: hit.entity, hit });
 
     const needed = this.getRequiredEntityCount(this.tool as ConstraintType);
     if (this.pendingClicks.length >= needed) {
       const entityIds = this.pendingClicks.map(c => c.entity!.id);
 
-      // Build per-entity point-var overrides based on which sub-part was clicked
-      const overrides: ([number, number] | null)[] = this.pendingClicks.map(c => this.hitToPointVars(c.hit));
+      // Build per-entity sub-part labels based on which specific sub-part
+      // the user clicked. This is stored on the resulting constraint and
+      // round-trips through serialisation and undo/redo.
+      const subParts = this.pendingClicks.map(c => this.hitToSubPart(c.hit));
 
       // For dimensional constraints, prompt for value
       let params: number[] = [];
@@ -705,7 +708,7 @@ export class InteractionHandler {
       }
 
       this.doc.pushUndo();
-      this.doc.addConstraint(this.tool as ConstraintType, entityIds, params, undefined, overrides);
+      this.doc.addConstraint(this.tool as ConstraintType, entityIds, params, undefined, subParts);
       this.pendingClicks = [];
       this.doc.solve();
       this.returnToSelect();
@@ -713,29 +716,6 @@ export class InteractionHandler {
     }
     this.updateStatus();
     this.renderFrame();
-  }
-
-  /** Convert a hit result to specific [x, y] variable indices based on which sub-part was clicked */
-  private hitToPointVars(hit?: HitResult): [number, number] | null {
-    if (!hit) return null;
-    const e = hit.entity;
-    if (e.type === 'point') return [e.vars[0], e.vars[1]];
-    if (e.type === 'line') {
-      if (hit.part === 'p1') return [e.vars[0], e.vars[1]];
-      if (hit.part === 'p2') return [e.vars[2], e.vars[3]];
-      return null; // line body, not a specific endpoint
-    }
-    if (e.type === 'arc') {
-      if (hit.part === 'center') return [e.vars[0], e.vars[1]];
-      if (hit.part === 'p1') return [e.vars[5], e.vars[6]];
-      if (hit.part === 'p2') return [e.vars[7], e.vars[8]];
-      return null;
-    }
-    if (e.type === 'circle') {
-      if (hit.part === 'center') return [e.vars[0], e.vars[1]];
-      return null;
-    }
-    return null;
   }
 
   private getRequiredEntityCount(type: ConstraintType): number {
