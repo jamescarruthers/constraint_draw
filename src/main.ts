@@ -37,23 +37,28 @@ function main(): void {
   handler.onInfoPanelUpdate = (selected) => {
     renderInfoPanel(infoPanelEl, doc, selected, {
       onDeleteConstraint: (id) => {
+        doc.pushUndo();
         doc.removeConstraint(id);
         doc.solve();
         handler.renderFrame();
       },
       onEditConstraintValue: (id, value) => {
+        doc.pushUndo();
         doc.updateConstraintParams(id, [value]);
         doc.solve();
         handler.renderFrame();
       },
       onReassignConstraint: (id, slot, newEntityId) => {
+        doc.pushUndo();
         doc.reassignConstraintEntity(id, slot, newEntityId);
         doc.solve();
         handler.renderFrame();
       },
       onRenameEntity: (oldId, newId) => {
+        doc.pushUndo();
         const ok = doc.renameEntity(oldId, newId);
         if (ok) handler.renderFrame();
+        else doc.dropLastUndo();
         return ok;
       },
     });

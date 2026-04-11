@@ -47,6 +47,8 @@ export class InteractionHandler {
   private isDragging = false;
   private dragGrabVars: [number, number] | null = null;
   private dragEntityId: string | null = null;
+  /** Whether we've already pushed an undo snapshot for the active drag */
+  private pushedUndoForDrag = false;
 
   /** Active rigid line-body drag state (perpendicular translation) */
   private lineBodyDrag: {
@@ -56,6 +58,11 @@ export class InteractionHandler {
     perpDir: [number, number];
     origCursor: [number, number];
   } | null = null;
+
+  /** World position of the most recent click — used for "cycle" detection */
+  private lastClickWorld: [number, number] | null = null;
+  /** Entity id chosen on the most recent click (for cycling past it) */
+  private lastClickPickedEntityId: string | null = null;
 
   // Pan state
   private isPanning = false;
@@ -190,6 +197,12 @@ export class InteractionHandler {
       // Project the cursor delta onto the line's perpendicular direction
       // and translate both endpoints by that projected offset.
       const perp = cdx * st.perpDir[0] + cdy * st.perpDir[1];
+      // Only push undo once we actually start moving (so a plain click
+      // that doesn't drag doesn't create a no-op undo entry).
+      if (!this.pushedUndoForDrag && Math.abs(perp) > 1e-6) {
+        this.doc.pushUndo();
+        this.pushedUndoForDrag = true;
+      }
       const ox = perp * st.perpDir[0];
       const oy = perp * st.perpDir[1];
       this.doc.translateLineRigid(
@@ -202,6 +215,10 @@ export class InteractionHandler {
     }
 
     if (this.isDragging && this.dragGrabVars) {
+      if (!this.pushedUndoForDrag) {
+        this.doc.pushUndo();
+        this.pushedUndoForDrag = true;
+      }
       this.doc.dragStep(this.dragGrabVars, [wx, wy]);
       this.renderFrame();
       return;
@@ -209,13 +226,15 @@ export class InteractionHandler {
 
     // Update hover for any "targeting" tool (select, delete, or any
     // constraint tool). Drawing tools (point/line/circle/arc) rely on the
-    // snap-target marker instead.
+    // snap-target marker instead. The hover target is picked with the same
+    // smart logic as click (prefer selected entity, cycle on repeat), so
+    // the highlight always matches what a click would actually hit.
     const targeting = this.isTargetingTool(this.tool);
     const prevHoverKey = this.hoverKey(this.hoveredHit);
     if (targeting) {
       const threshold = 8 / this.renderer.zoom;
       const hits = hitTest(this.doc.entities, this.doc.q, wx, wy, threshold, threshold);
-      this.hoveredHit = hits[0] ?? null;
+      this.hoveredHit = hits.length > 0 ? this.pickBestHit(hits) : null;
     } else {
       this.hoveredHit = null;
     }
@@ -256,6 +275,7 @@ export class InteractionHandler {
       this.lineBodyDrag = null;
       this.isDragging = false;
       this.dragEntityId = null;
+      this.pushedUndoForDrag = false;
       this.doc.endDrag();
       this.renderFrame();
       return;
@@ -266,6 +286,7 @@ export class InteractionHandler {
       this.doc.endDrag();
       this.dragGrabVars = null;
       this.dragEntityId = null;
+      this.pushedUndoForDrag = false;
       this.renderFrame();
     }
   }
@@ -288,10 +309,40 @@ export class InteractionHandler {
   }
 
   private onKeyDown(e: KeyboardEvent): void {
+    // Skip key handling if the user is typing in an input/select elsewhere
+    // (e.g. the info panel's editable value / id inputs).
+    const tgt = e.target as HTMLElement | null;
+    if (tgt && (tgt.tagName === 'INPUT' || tgt.tagName === 'SELECT' || tgt.tagName === 'TEXTAREA')) {
+      // Still allow Escape to blur
+      if (e.key === 'Escape') (tgt as HTMLElement).blur();
+      return;
+    }
+
+    // Undo / redo
+    const mod = e.metaKey || e.ctrlKey;
+    if (mod && (e.key === 'z' || e.key === 'Z')) {
+      e.preventDefault();
+      if (this.isDragging) return;
+      if (e.shiftKey) {
+        if (this.doc.redo()) this.renderFrame();
+      } else {
+        if (this.doc.undo()) this.renderFrame();
+      }
+      return;
+    }
+    if (mod && (e.key === 'y' || e.key === 'Y')) {
+      // Ctrl+Y = redo (Windows convention)
+      e.preventDefault();
+      if (this.isDragging) return;
+      if (this.doc.redo()) this.renderFrame();
+      return;
+    }
+
     if (e.key === 'Escape') {
       this.setTool('select');
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
-      // Delete selected entities
+      if (this.selectedEntities.length === 0) return;
+      this.doc.pushUndo();
       for (const ent of this.selectedEntities) {
         this.doc.removeEntity(ent.id);
       }
@@ -299,7 +350,7 @@ export class InteractionHandler {
       this.doc.solve();
       this.renderFrame();
     } else if ((e.key === 'c' || e.key === 'C') && this.selectedEntities.length > 0) {
-      // Toggle construction flag on selected entities
+      this.doc.pushUndo();
       for (const ent of this.selectedEntities) {
         this.doc.toggleConstruction(ent.id);
       }
@@ -311,8 +362,10 @@ export class InteractionHandler {
 
   private handleSelectDown(hits: HitResult[]): void {
     if (hits.length > 0) {
-      const hit = hits[0];
+      const hit = this.pickBestHit(hits);
       this.selectedEntities = [hit.entity];
+      this.lastClickWorld = [...this.mouseWorld] as [number, number];
+      this.lastClickPickedEntityId = hit.entity.id;
 
       // Special case: grabbing the BODY of a line kicks off a rigid
       // perpendicular translation rather than a point-grab drag, so the
@@ -380,8 +433,67 @@ export class InteractionHandler {
     return [];
   }
 
+  /**
+   * Choose the "best" hit from a sorted hit-test result list, applying
+   * two smart heuristics to help disambiguate co-located endpoints:
+   *
+   *   1. **Cycle-on-repeat**: if the user clicks the same spot they
+   *      just clicked (within a small threshold), rotate past the
+   *      entity that was picked last time. This lets them cycle
+   *      through stacked endpoints with repeated clicks.
+   *
+   *   2. **Prefer selected entity**: if there's no repeat-click but
+   *      there IS a currently-selected entity, prefer a hit whose
+   *      entity id matches the selection. So clicking a line body
+   *      and then clicking one of its endpoints picks *that* line's
+   *      endpoint over a coincident one from another line.
+   *
+   * Falls back to the first hit (which is already priority-sorted
+   * endpoints > centers > bodies, then by distance) when neither
+   * heuristic applies.
+   */
+  private pickBestHit(hits: HitResult[]): HitResult {
+    if (hits.length <= 1) return hits[0];
+
+    const CYCLE_RADIUS = 6 / this.renderer.zoom;
+    const isRepeat =
+      this.lastClickWorld !== null &&
+      Math.hypot(
+        this.mouseWorld[0] - this.lastClickWorld[0],
+        this.mouseWorld[1] - this.lastClickWorld[1]
+      ) < CYCLE_RADIUS;
+
+    if (isRepeat && this.lastClickPickedEntityId) {
+      // Deduplicate by entity id so we cycle through distinct entities
+      // rather than sub-parts of the same one.
+      const seen = new Set<string>();
+      const unique: HitResult[] = [];
+      for (const h of hits) {
+        if (!seen.has(h.entity.id)) {
+          seen.add(h.entity.id);
+          unique.push(h);
+        }
+      }
+      const currentIdx = unique.findIndex(h => h.entity.id === this.lastClickPickedEntityId);
+      if (currentIdx >= 0 && unique.length > 1) {
+        const nextIdx = (currentIdx + 1) % unique.length;
+        return unique[nextIdx];
+      }
+    }
+
+    // Prefer sub-parts of the currently-selected entity
+    if (this.selectedEntities.length > 0) {
+      const selId = this.selectedEntities[0].id;
+      const preferred = hits.find(h => h.entity.id === selId);
+      if (preferred) return preferred;
+    }
+
+    return hits[0];
+  }
+
   private handleDelete(hits: HitResult[]): void {
     if (hits.length > 0) {
+      this.doc.pushUndo();
       this.doc.removeEntity(hits[0].entity.id);
       this.doc.solve();
       this.returnToSelect();
@@ -389,6 +501,7 @@ export class InteractionHandler {
   }
 
   private handleAddPoint(wx: number, wy: number): void {
+    this.doc.pushUndo();
     const p = this.doc.addEntity('point', [wx, wy]);
     this.applyConstructionMode(p);
     this.doc.solve();
@@ -405,6 +518,7 @@ export class InteractionHandler {
 
     if (this.pendingClicks.length === 2) {
       const [p1, p2] = this.pendingClicks;
+      this.doc.pushUndo();
       const line = this.doc.addEntity('line', [p1.wx, p1.wy, p2.wx, p2.wy]);
       this.applyConstructionMode(line);
 
@@ -488,6 +602,7 @@ export class InteractionHandler {
 
     if (this.pendingClicks.length === 2) {
       const [center, edge] = this.pendingClicks;
+      this.doc.pushUndo();
       const r = Math.hypot(edge.wx - center.wx, edge.wy - center.wy);
       const c = this.doc.addEntity('circle', [center.wx, center.wy, Math.max(r, 10)]);
       this.applyConstructionMode(c);
@@ -508,6 +623,7 @@ export class InteractionHandler {
 
     if (this.pendingClicks.length === 3) {
       const [center, start, end] = this.pendingClicks;
+      this.doc.pushUndo();
       const r = Math.hypot(start.wx - center.wx, start.wy - center.wy);
       const thetaStart = Math.atan2(start.wy - center.wy, start.wx - center.wx);
       const thetaEnd = Math.atan2(end.wy - center.wy, end.wx - center.wx);
@@ -588,6 +704,7 @@ export class InteractionHandler {
         params = [parseFloat(input)];
       }
 
+      this.doc.pushUndo();
       this.doc.addConstraint(this.tool as ConstraintType, entityIds, params, undefined, overrides);
       this.pendingClicks = [];
       this.doc.solve();
