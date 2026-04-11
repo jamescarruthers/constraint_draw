@@ -2,7 +2,7 @@ import { Entity, getPointPos, getLineEndpoints, getCircleParams, getArcParams, g
 import { BaseConstraint } from '../core/constraint';
 import { DOFState, Vec } from '../core/types';
 
-/** Colour scheme for DOF states */
+/** Colour scheme */
 const COLORS = {
   background: '#1a1a2e',
   grid: '#252545',
@@ -13,17 +13,14 @@ const COLORS = {
     'fully-constrained': '#e0e0e0',
     'over-constrained': '#e94560',
   },
-  point: {
-    default: '#c0c0d0',
-    'under-constrained': '#5dade2',
-    'fully-constrained': '#e0e0e0',
-    'over-constrained': '#e94560',
-  },
   selected: '#00e5ff',
   dragging: '#ffd740',
-  constraint: '#4ecca3',
+  /** Colour for endpoints/centres that participate in any constraint */
+  constrainedNode: '#4ecca3',
   constraintIcon: '#4ecca3',
   dimension: '#f0a030',
+  preview: '#ffd740',
+  snap: '#ffd740',
 };
 
 /** Constraint icon symbols */
@@ -45,6 +42,13 @@ const CONSTRAINT_SYMBOLS: Partial<Record<string, string>> = {
   pointOnCircle: '○',
 };
 
+/** Preview shapes drawn while a drawing tool is between clicks */
+export type DrawingPreview =
+  | { type: 'line'; points: [[number, number], [number, number]] }
+  | { type: 'circle'; center: [number, number]; radiusPoint: [number, number] }
+  | { type: 'arcRadius'; center: [number, number]; radiusPoint: [number, number] }
+  | { type: 'arc'; center: [number, number]; start: [number, number]; end: [number, number] };
+
 export interface RenderState {
   entities: Entity[];
   constraints: BaseConstraint[];
@@ -54,11 +58,16 @@ export interface RenderState {
   underConstrainedIds: Set<string>;
   overConstrainedIds: Set<string>;
   draggingEntityId: string | null;
+  /** Variable indices that are referenced by at least one constraint */
+  constrainedVars: Set<number>;
+  /** Optional drawing preview (ghost shape following cursor) */
+  drawingPreview: DrawingPreview | null;
+  /** Optional snap target under the cursor */
+  snapTarget: [number, number] | null;
 }
 
 /**
  * Canvas renderer for the sketch.
- * Handles pan/zoom, entity drawing, constraint icons, and DOF coloring.
  */
 export class Renderer {
   private ctx: CanvasRenderingContext2D;
@@ -87,7 +96,6 @@ export class Renderer {
     this.canvas.style.height = `${this.height}px`;
   }
 
-  /** Convert screen coords to world coords */
   screenToWorld(sx: number, sy: number): [number, number] {
     return [
       (sx - this.panX) / this.zoom,
@@ -95,7 +103,6 @@ export class Renderer {
     ];
   }
 
-  /** Convert world coords to screen coords */
   worldToScreen(wx: number, wy: number): [number, number] {
     return [
       wx * this.zoom + this.panX,
@@ -110,41 +117,56 @@ export class Renderer {
     ctx.save();
     ctx.scale(dpr, dpr);
 
-    // Clear
     ctx.fillStyle = COLORS.background;
     ctx.fillRect(0, 0, this.width, this.height);
 
-    // Draw grid
     this.drawGrid();
 
-    // Apply view transform
+    // Apply view transform for world-space entities
     ctx.save();
     ctx.translate(this.panX, this.panY);
     ctx.scale(this.zoom, this.zoom);
 
-    // Draw entities
+    // Entities (wireframe first)
     for (const entity of state.entities) {
-      const isSelected = state.selectedEntityIds.has(entity.id);
-      const isDragging = state.draggingEntityId === entity.id;
-      const isUnder = state.underConstrainedIds.has(entity.id);
-      const isOver = state.overConstrainedIds.has(entity.id);
-
-      let color: string;
-      if (isDragging) color = COLORS.dragging;
-      else if (isSelected) color = COLORS.selected;
-      else if (isOver) color = COLORS.entity['over-constrained'];
-      else if (isUnder) color = COLORS.entity['under-constrained'];
-      else color = COLORS.entity['fully-constrained'];
-
+      const color = this.pickEntityColor(entity, state);
       this.drawEntity(entity, state.q, color);
+    }
+
+    // Draw node markers for endpoints/centers with constraint awareness
+    for (const entity of state.entities) {
+      this.drawEntityNodes(entity, state);
+    }
+
+    // Drawing preview (ghost shape)
+    if (state.drawingPreview) {
+      this.drawPreview(state.drawingPreview);
+    }
+
+    // Snap highlight
+    if (state.snapTarget) {
+      this.drawSnapTarget(state.snapTarget);
     }
 
     ctx.restore();
 
-    // Draw constraint icons (screen space, fixed pixel size)
+    // Constraint icons (screen space)
     this.drawConstraintIcons(state);
 
     ctx.restore();
+  }
+
+  private pickEntityColor(entity: Entity, state: RenderState): string {
+    const isSelected = state.selectedEntityIds.has(entity.id);
+    const isDragging = state.draggingEntityId === entity.id;
+    const isUnder = state.underConstrainedIds.has(entity.id);
+    const isOver = state.overConstrainedIds.has(entity.id);
+
+    if (isDragging) return COLORS.dragging;
+    if (isSelected) return COLORS.selected;
+    if (isOver) return COLORS.entity['over-constrained'];
+    if (isUnder) return COLORS.entity['under-constrained'];
+    return COLORS.entity['fully-constrained'];
   }
 
   private drawGrid(): void {
@@ -152,12 +174,11 @@ export class Renderer {
     const step = 50 * this.zoom;
     const majorStep = step * 5;
 
-    if (step < 5) return; // too zoomed out
+    if (step < 5) return;
 
     const startX = this.panX % step;
     const startY = this.panY % step;
 
-    // Minor grid
     ctx.strokeStyle = COLORS.grid;
     ctx.lineWidth = 0.5;
     ctx.beginPath();
@@ -171,7 +192,6 @@ export class Renderer {
     }
     ctx.stroke();
 
-    // Major grid
     const majorStartX = this.panX % majorStep;
     const majorStartY = this.panY % majorStep;
     ctx.strokeStyle = COLORS.gridMajor;
@@ -187,7 +207,6 @@ export class Renderer {
     }
     ctx.stroke();
 
-    // Origin axes
     const [ox, oy] = this.worldToScreen(0, 0);
     ctx.strokeStyle = '#3a3a6a';
     ctx.lineWidth = 1.5;
@@ -205,12 +224,7 @@ export class Renderer {
 
     switch (entity.type) {
       case 'point': {
-        const [x, y] = getPointPos(entity, q);
-        const r = 4 / this.zoom;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
+        // Point bodies are drawn as nodes in drawEntityNodes
         break;
       }
       case 'line': {
@@ -221,15 +235,6 @@ export class Renderer {
         ctx.moveTo(x1, y1);
         ctx.lineTo(x2, y2);
         ctx.stroke();
-        // Draw endpoint dots
-        const r = 3 / this.zoom;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(x1, y1, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.beginPath();
-        ctx.arc(x2, y2, r, 0, Math.PI * 2);
-        ctx.fill();
         break;
       }
       case 'circle': {
@@ -239,12 +244,6 @@ export class Renderer {
         ctx.beginPath();
         ctx.arc(cx, cy, Math.abs(r), 0, Math.PI * 2);
         ctx.stroke();
-        // Centre dot
-        const dotR = 2 / this.zoom;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(cx, cy, dotR, 0, Math.PI * 2);
-        ctx.fill();
         break;
       }
       case 'arc': {
@@ -254,12 +253,6 @@ export class Renderer {
         ctx.beginPath();
         ctx.arc(cx, cy, Math.abs(r), thetaStart, thetaEnd);
         ctx.stroke();
-        // Centre dot
-        const dotR = 2 / this.zoom;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(cx, cy, dotR, 0, Math.PI * 2);
-        ctx.fill();
         break;
       }
       case 'ellipse': {
@@ -269,15 +262,150 @@ export class Renderer {
         ctx.beginPath();
         ctx.ellipse(cx, cy, Math.abs(rx), Math.abs(ry), angle, 0, Math.PI * 2);
         ctx.stroke();
-        // Centre dot
-        const dotR = 2 / this.zoom;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(cx, cy, dotR, 0, Math.PI * 2);
-        ctx.fill();
         break;
       }
     }
+  }
+
+  /**
+   * Draw endpoint / centre markers for an entity with constraint-awareness.
+   * A node whose x-var is in constrainedVars is drawn as a filled ring in the
+   * constrained colour; otherwise as a filled dot in the entity colour.
+   */
+  private drawEntityNodes(entity: Entity, state: RenderState): void {
+    const ctx = this.ctx;
+    const q = state.q;
+    const entityColor = this.pickEntityColor(entity, state);
+
+    const drawNode = (wx: number, wy: number, xVar: number, selectable: boolean) => {
+      const constrained = state.constrainedVars.has(xVar);
+      const r = (selectable ? 5 : 3) / this.zoom;
+
+      if (constrained) {
+        // Outer ring + inner dot to indicate the node participates in a constraint
+        ctx.strokeStyle = COLORS.constrainedNode;
+        ctx.lineWidth = 2 / this.zoom;
+        ctx.beginPath();
+        ctx.arc(wx, wy, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = COLORS.constrainedNode;
+        ctx.beginPath();
+        ctx.arc(wx, wy, r * 0.45, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = entityColor;
+        ctx.beginPath();
+        ctx.arc(wx, wy, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    };
+
+    switch (entity.type) {
+      case 'point': {
+        const [x, y] = getPointPos(entity, q);
+        drawNode(x, y, entity.vars[0], true);
+        break;
+      }
+      case 'line': {
+        const [[x1, y1], [x2, y2]] = getLineEndpoints(entity, q);
+        drawNode(x1, y1, entity.vars[0], true);
+        drawNode(x2, y2, entity.vars[2], true);
+        break;
+      }
+      case 'circle':
+      case 'arc':
+      case 'ellipse': {
+        const v = entity.vars;
+        drawNode(q[v[0]], q[v[1]], v[0], false);
+        break;
+      }
+    }
+  }
+
+  private drawPreview(preview: DrawingPreview): void {
+    const ctx = this.ctx;
+    const lineWidth = 2 / this.zoom;
+
+    ctx.strokeStyle = COLORS.preview;
+    ctx.lineWidth = lineWidth;
+    ctx.setLineDash([6 / this.zoom, 4 / this.zoom]);
+
+    switch (preview.type) {
+      case 'line': {
+        const [[x1, y1], [x2, y2]] = preview.points;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        break;
+      }
+      case 'circle': {
+        const [cx, cy] = preview.center;
+        const [ex, ey] = preview.radiusPoint;
+        const r = Math.hypot(ex - cx, ey - cy);
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.stroke();
+        // Radius line
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        break;
+      }
+      case 'arcRadius': {
+        const [cx, cy] = preview.center;
+        const [ex, ey] = preview.radiusPoint;
+        const r = Math.hypot(ex - cx, ey - cy);
+        // Show the full circle as a hint for radius
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        break;
+      }
+      case 'arc': {
+        const [cx, cy] = preview.center;
+        const [sx, sy] = preview.start;
+        const [ex, ey] = preview.end;
+        const r = Math.hypot(sx - cx, sy - cy);
+        const tStart = Math.atan2(sy - cy, sx - cx);
+        const tEnd = Math.atan2(ey - cy, ex - cx);
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, tStart, tEnd);
+        ctx.stroke();
+        // Spoke lines to start/end
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(sx, sy);
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        break;
+      }
+    }
+
+    ctx.setLineDash([]);
+  }
+
+  private drawSnapTarget(target: [number, number]): void {
+    const ctx = this.ctx;
+    const r = 8 / this.zoom;
+    ctx.strokeStyle = COLORS.snap;
+    ctx.lineWidth = 1.5 / this.zoom;
+    ctx.beginPath();
+    ctx.arc(target[0], target[1], r, 0, Math.PI * 2);
+    ctx.stroke();
+    // Crosshair
+    ctx.beginPath();
+    ctx.moveTo(target[0] - r, target[1]);
+    ctx.lineTo(target[0] + r, target[1]);
+    ctx.moveTo(target[0], target[1] - r);
+    ctx.lineTo(target[0], target[1] + r);
+    ctx.stroke();
   }
 
   private drawConstraintIcons(state: RenderState): void {
@@ -290,13 +418,11 @@ export class Renderer {
       const symbol = CONSTRAINT_SYMBOLS[constraint.type];
       if (!symbol) continue;
 
-      // Find constraint position: average of involved entity centres
       const positions: [number, number][] = [];
       for (const eid of constraint.entityIds) {
         const entity = state.entities.find(e => e.id === eid);
         if (!entity) continue;
-        const pos = this.getEntityCenter(entity, state.q);
-        positions.push(pos);
+        positions.push(this.getEntityCenter(entity, state.q));
       }
       if (positions.length === 0) continue;
 
@@ -304,7 +430,6 @@ export class Renderer {
       const avgY = positions.reduce((s, p) => s + p[1], 0) / positions.length;
       const [sx, sy] = this.worldToScreen(avgX, avgY);
 
-      // Offset slightly
       const offset = 15;
       ctx.fillStyle = COLORS.constraintIcon;
       ctx.fillText(symbol, sx + offset, sy - offset);
@@ -320,10 +445,7 @@ export class Renderer {
         return [(x1 + x2) / 2, (y1 + y2) / 2];
       }
       case 'circle':
-      case 'arc': {
-        const v = entity.vars;
-        return [q[v[0]], q[v[1]]];
-      }
+      case 'arc':
       case 'ellipse': {
         const v = entity.vars;
         return [q[v[0]], q[v[1]]];

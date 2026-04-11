@@ -1,7 +1,7 @@
 import { SketchDocument } from '../sketch';
-import { Renderer, RenderState } from './renderer';
+import { Renderer, RenderState, DrawingPreview } from './renderer';
 import { hitTest, HitResult } from './hittest';
-import { ConstraintType, EntityType } from '../core/types';
+import { ConstraintType } from '../core/types';
 import { Entity } from '../core/entity';
 
 export type ToolMode =
@@ -15,6 +15,13 @@ export type ToolMode =
   | 'load'
   | ConstraintType;
 
+interface PendingClick {
+  wx: number;
+  wy: number;
+  entity?: Entity;
+  hit?: HitResult;
+}
+
 /**
  * Handles all mouse/keyboard interaction with the sketch canvas.
  */
@@ -25,7 +32,10 @@ export class InteractionHandler {
 
   tool: ToolMode = 'select';
   selectedEntities: Entity[] = [];
-  private pendingClicks: Array<{ wx: number; wy: number; entity?: Entity; hit?: HitResult }> = [];
+  private pendingClicks: PendingClick[] = [];
+
+  /** Current mouse world position — used for drawing previews */
+  private mouseWorld: [number, number] = [0, 0];
 
   // Drag state
   private isDragging = false;
@@ -41,6 +51,7 @@ export class InteractionHandler {
 
   // Callbacks
   onStatusUpdate?: (state: string, dof: string, info: string) => void;
+  onToolChange?: (tool: ToolMode) => void;
 
   constructor(doc: SketchDocument, renderer: Renderer, canvas: HTMLCanvasElement) {
     this.doc = doc;
@@ -66,14 +77,27 @@ export class InteractionHandler {
     this.tool = tool;
     this.pendingClicks = [];
     this.selectedEntities = [];
+    this.onToolChange?.(tool);
     this.updateStatus();
     this.renderFrame();
   }
 
-  private onMouseDown(e: MouseEvent): void {
+  /** Return to select mode once a drawing or constraint action completes. */
+  private returnToSelect(): void {
+    if (this.tool === 'select') return;
+    this.setTool('select');
+  }
+
+  private getMouseWorld(e: MouseEvent): [number, number] {
     const rect = this.canvas.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
+    return this.renderer.screenToWorld(sx, sy);
+  }
+
+  private onMouseDown(e: MouseEvent): void {
+    const [wx, wy] = this.getMouseWorld(e);
+    this.mouseWorld = [wx, wy];
 
     // Right-click or middle-click: pan
     if (e.button === 1 || e.button === 2) {
@@ -85,13 +109,12 @@ export class InteractionHandler {
       return;
     }
 
-    const [wx, wy] = this.renderer.screenToWorld(sx, sy);
     const threshold = 8 / this.renderer.zoom;
     const hits = hitTest(this.doc.entities, this.doc.q, wx, wy, threshold, threshold);
 
     switch (this.tool) {
       case 'select':
-        this.handleSelectDown(hits, wx, wy);
+        this.handleSelectDown(hits);
         break;
       case 'delete':
         this.handleDelete(hits);
@@ -116,6 +139,9 @@ export class InteractionHandler {
   }
 
   private onMouseMove(e: MouseEvent): void {
+    const [wx, wy] = this.getMouseWorld(e);
+    this.mouseWorld = [wx, wy];
+
     if (this.isPanning) {
       this.renderer.panX = this.panStartPanX + (e.clientX - this.panStartX);
       this.renderer.panY = this.panStartPanY + (e.clientY - this.panStartY);
@@ -124,17 +150,19 @@ export class InteractionHandler {
     }
 
     if (this.isDragging && this.dragGrabVars) {
-      const rect = this.canvas.getBoundingClientRect();
-      const sx = e.clientX - rect.left;
-      const sy = e.clientY - rect.top;
-      const [wx, wy] = this.renderer.screenToWorld(sx, sy);
-
       this.doc.dragStep(this.dragGrabVars, [wx, wy]);
+      this.renderFrame();
+      return;
+    }
+
+    // If in a drawing tool with pending clicks, repaint for preview
+    if (this.pendingClicks.length > 0 &&
+        (this.tool === 'line' || this.tool === 'circle' || this.tool === 'arc')) {
       this.renderFrame();
     }
   }
 
-  private onMouseUp(e: MouseEvent): void {
+  private onMouseUp(_e: MouseEvent): void {
     if (this.isPanning) {
       this.isPanning = false;
       return;
@@ -182,16 +210,15 @@ export class InteractionHandler {
 
   // ─── Tool Handlers ─────────────────────────────────────────────
 
-  private handleSelectDown(hits: HitResult[], wx: number, wy: number): void {
+  private handleSelectDown(hits: HitResult[]): void {
     if (hits.length > 0) {
       const hit = hits[0];
       this.selectedEntities = [hit.entity];
 
-      // Start dragging
+      // Start dragging the specific sub-part (endpoint, center, etc.)
       this.isDragging = true;
       this.dragEntityId = hit.entity.id;
 
-      // Determine which variables to grab
       if (hit.vars.length >= 2) {
         this.dragGrabVars = [hit.vars[0], hit.vars[1]];
       } else {
@@ -203,16 +230,6 @@ export class InteractionHandler {
       }
     } else {
       this.selectedEntities = [];
-      // Start panning with left click on empty space
-      this.isPanning = true;
-      this.panStartX = wx * this.renderer.zoom + this.renderer.panX;
-      this.panStartY = wy * this.renderer.zoom + this.renderer.panY;
-      // We need screen coords for pan
-      const rect = this.canvas.getBoundingClientRect();
-      this.panStartX = wx * this.renderer.zoom + this.renderer.panX;
-      this.panStartY = wy * this.renderer.zoom + this.renderer.panY;
-      // recalc properly
-      this.isPanning = false; // disable this, use middle/right click pan instead
     }
     this.updateStatus();
     this.renderFrame();
@@ -222,41 +239,97 @@ export class InteractionHandler {
     if (hits.length > 0) {
       this.doc.removeEntity(hits[0].entity.id);
       this.doc.solve();
-      this.renderFrame();
+      this.returnToSelect();
     }
   }
 
   private handleAddPoint(wx: number, wy: number): void {
     this.doc.addEntity('point', [wx, wy]);
     this.doc.solve();
-    this.renderFrame();
+    this.returnToSelect();
   }
 
   private handleAddLine(wx: number, wy: number, hits: HitResult[]): void {
-    this.pendingClicks.push({ wx, wy, hit: hits[0] });
+    // Snap to existing points/endpoints if close
+    const snap = this.pickSnap(hits);
+    const px = snap?.pos[0] ?? wx;
+    const py = snap?.pos[1] ?? wy;
+
+    this.pendingClicks.push({ wx: px, wy: py, entity: hits[0]?.entity, hit: hits[0] });
 
     if (this.pendingClicks.length === 2) {
       const [p1, p2] = this.pendingClicks;
       const line = this.doc.addEntity('line', [p1.wx, p1.wy, p2.wx, p2.wy]);
 
-      // Auto-coincident if clicking on existing points
-      if (p1.hit?.entity.type === 'point') {
-        this.doc.addConstraint('coincident', [p1.hit.entity.id, line.id]);
-      }
-      if (p2.hit?.entity.type === 'point') {
-        // Need to create a temp point for endpoint 2 of line
-        // Actually, lines have their endpoints built in, so we skip auto-coincident for now
-      }
+      // Auto-coincident line endpoints with clicked existing points/line-endpoints
+      this.autoCoincidentEndpoint(line, 0, p1.hit);
+      this.autoCoincidentEndpoint(line, 1, p2.hit);
 
       this.pendingClicks = [];
       this.doc.solve();
-      this.renderFrame();
+      this.returnToSelect();
+      return;
     }
     this.updateStatus();
+    this.renderFrame();
+  }
+
+  /**
+   * If a line endpoint was clicked over an existing point or line endpoint,
+   * emit a coincident constraint between the new line's endpoint and that point.
+   * @param endpointIdx 0 for p1, 1 for p2
+   */
+  private autoCoincidentEndpoint(line: Entity, endpointIdx: 0 | 1, hit?: HitResult): void {
+    if (!hit) return;
+    const other = hit.entity;
+    if (other.id === line.id) return;
+
+    const lineVars: [number, number] = endpointIdx === 0
+      ? [line.vars[0], line.vars[1]]
+      : [line.vars[2], line.vars[3]];
+
+    let otherVars: [number, number] | null = null;
+
+    if (other.type === 'point') {
+      otherVars = [other.vars[0], other.vars[1]];
+    } else if (other.type === 'line') {
+      if (hit.part === 'p1') otherVars = [other.vars[0], other.vars[1]];
+      else if (hit.part === 'p2') otherVars = [other.vars[2], other.vars[3]];
+    }
+
+    if (!otherVars) return;
+
+    this.doc.addConstraint(
+      'coincident',
+      [line.id, other.id],
+      [],
+      undefined,
+      [lineVars, otherVars]
+    );
+  }
+
+  /** Return snap target position if the top hit is a point-like sub-part */
+  private pickSnap(hits: HitResult[]): { pos: [number, number] } | null {
+    for (const h of hits) {
+      if (h.entity.type === 'point') {
+        return { pos: [this.doc.q[h.entity.vars[0]], this.doc.q[h.entity.vars[1]]] };
+      }
+      if (h.entity.type === 'line') {
+        if (h.part === 'p1') return { pos: [this.doc.q[h.entity.vars[0]], this.doc.q[h.entity.vars[1]]] };
+        if (h.part === 'p2') return { pos: [this.doc.q[h.entity.vars[2]], this.doc.q[h.entity.vars[3]]] };
+      }
+      if ((h.entity.type === 'circle' || h.entity.type === 'arc') && h.part === 'center') {
+        return { pos: [this.doc.q[h.entity.vars[0]], this.doc.q[h.entity.vars[1]]] };
+      }
+    }
+    return null;
   }
 
   private handleAddCircle(wx: number, wy: number, hits: HitResult[]): void {
-    this.pendingClicks.push({ wx, wy, hit: hits[0] });
+    const snap = this.pickSnap(hits);
+    const px = snap?.pos[0] ?? wx;
+    const py = snap?.pos[1] ?? wy;
+    this.pendingClicks.push({ wx: px, wy: py, entity: hits[0]?.entity, hit: hits[0] });
 
     if (this.pendingClicks.length === 2) {
       const [center, edge] = this.pendingClicks;
@@ -264,13 +337,18 @@ export class InteractionHandler {
       this.doc.addEntity('circle', [center.wx, center.wy, Math.max(r, 10)]);
       this.pendingClicks = [];
       this.doc.solve();
-      this.renderFrame();
+      this.returnToSelect();
+      return;
     }
     this.updateStatus();
+    this.renderFrame();
   }
 
   private handleAddArc(wx: number, wy: number, hits: HitResult[]): void {
-    this.pendingClicks.push({ wx, wy, hit: hits[0] });
+    const snap = this.pickSnap(hits);
+    const px = snap?.pos[0] ?? wx;
+    const py = snap?.pos[1] ?? wy;
+    this.pendingClicks.push({ wx: px, wy: py, entity: hits[0]?.entity, hit: hits[0] });
 
     if (this.pendingClicks.length === 3) {
       const [center, start, end] = this.pendingClicks;
@@ -280,9 +358,11 @@ export class InteractionHandler {
       this.doc.addEntity('arc', [center.wx, center.wy, Math.max(r, 10), thetaStart, thetaEnd]);
       this.pendingClicks = [];
       this.doc.solve();
-      this.renderFrame();
+      this.returnToSelect();
+      return;
     }
     this.updateStatus();
+    this.renderFrame();
   }
 
   private handleConstraintClick(hits: HitResult[], wx: number, wy: number): void {
@@ -295,6 +375,9 @@ export class InteractionHandler {
     if (this.pendingClicks.length >= needed) {
       const entityIds = this.pendingClicks.map(c => c.entity!.id);
 
+      // Build per-entity point-var overrides based on which sub-part was clicked
+      const overrides: ([number, number] | null)[] = this.pendingClicks.map(c => this.hitToPointVars(c.hit));
+
       // For dimensional constraints, prompt for value
       let params: number[] = [];
       if (this.isDimensionalConstraint(this.tool as ConstraintType)) {
@@ -302,17 +385,38 @@ export class InteractionHandler {
         const input = prompt(`Enter value:`, String(Math.round(defaultVal * 100) / 100));
         if (input === null) {
           this.pendingClicks = [];
+          this.updateStatus();
+          this.renderFrame();
           return;
         }
         params = [parseFloat(input)];
       }
 
-      this.doc.addConstraint(this.tool as ConstraintType, entityIds, params);
+      this.doc.addConstraint(this.tool as ConstraintType, entityIds, params, undefined, overrides);
       this.pendingClicks = [];
       this.doc.solve();
-      this.renderFrame();
+      this.returnToSelect();
+      return;
     }
     this.updateStatus();
+    this.renderFrame();
+  }
+
+  /** Convert a hit result to specific [x, y] variable indices based on which sub-part was clicked */
+  private hitToPointVars(hit?: HitResult): [number, number] | null {
+    if (!hit) return null;
+    const e = hit.entity;
+    if (e.type === 'point') return [e.vars[0], e.vars[1]];
+    if (e.type === 'line') {
+      if (hit.part === 'p1') return [e.vars[0], e.vars[1]];
+      if (hit.part === 'p2') return [e.vars[2], e.vars[3]];
+      return null; // line body, not a specific endpoint
+    }
+    if (e.type === 'circle' || e.type === 'arc') {
+      if (hit.part === 'center') return [e.vars[0], e.vars[1]];
+      return null;
+    }
+    return null;
   }
 
   private getRequiredEntityCount(type: ConstraintType): number {
@@ -351,7 +455,7 @@ export class InteractionHandler {
     return ['fixedLength', 'fixedAngle', 'angleBetween', 'fixedRadius', 'horizontalDist', 'verticalDist'].includes(type);
   }
 
-  private getDefaultDimensionValue(type: ConstraintType, clicks: typeof this.pendingClicks): number {
+  private getDefaultDimensionValue(type: ConstraintType, clicks: PendingClick[]): number {
     switch (type) {
       case 'fixedLength': {
         const ent = clicks[0]?.entity;
@@ -391,6 +495,7 @@ export class InteractionHandler {
   // ─── Rendering ─────────────────────────────────────────────────
 
   renderFrame(): void {
+    const constrainedVars = this.computeConstrainedVars();
     const state: RenderState = {
       entities: this.doc.entities,
       constraints: this.doc.constraints,
@@ -400,9 +505,63 @@ export class InteractionHandler {
       underConstrainedIds: this.doc.underConstrainedIds,
       overConstrainedIds: this.doc.overConstrainedIds,
       draggingEntityId: this.dragEntityId,
+      constrainedVars,
+      drawingPreview: this.getDrawingPreview(),
+      snapTarget: this.getSnapTarget(),
     };
     this.renderer.render(state);
     this.updateStatus();
+  }
+
+  /** Collect the set of variable indices referenced by at least one constraint */
+  private computeConstrainedVars(): Set<number> {
+    const result = new Set<number>();
+    for (const c of this.doc.constraints) {
+      for (const e of c.jacobianEntries(this.doc.q, 0)) {
+        result.add(e.col);
+      }
+    }
+    return result;
+  }
+
+  /** Build the drawing preview state based on pending clicks and current mouse */
+  private getDrawingPreview(): DrawingPreview | null {
+    if (this.pendingClicks.length === 0) return null;
+    const [mx, my] = this.mouseWorld;
+
+    if (this.tool === 'line' && this.pendingClicks.length === 1) {
+      const p1 = this.pendingClicks[0];
+      return { type: 'line', points: [[p1.wx, p1.wy], [mx, my]] };
+    }
+
+    if (this.tool === 'circle' && this.pendingClicks.length === 1) {
+      const c = this.pendingClicks[0];
+      return { type: 'circle', center: [c.wx, c.wy], radiusPoint: [mx, my] };
+    }
+
+    if (this.tool === 'arc') {
+      if (this.pendingClicks.length === 1) {
+        // Show a crosshair for start-of-radius
+        const c = this.pendingClicks[0];
+        return { type: 'arcRadius', center: [c.wx, c.wy], radiusPoint: [mx, my] };
+      }
+      if (this.pendingClicks.length === 2) {
+        const c = this.pendingClicks[0];
+        const s = this.pendingClicks[1];
+        return { type: 'arc', center: [c.wx, c.wy], start: [s.wx, s.wy], end: [mx, my] };
+      }
+    }
+
+    return null;
+  }
+
+  /** If current mouse is over a snap target (existing point/endpoint/center), return it */
+  private getSnapTarget(): [number, number] | null {
+    if (this.tool === 'select' || this.tool === 'delete') return null;
+    const threshold = 8 / this.renderer.zoom;
+    const hits = hitTest(this.doc.entities, this.doc.q, this.mouseWorld[0], this.mouseWorld[1], threshold, threshold);
+    const snap = this.pickSnap(hits);
+    return snap?.pos ?? null;
   }
 
   private updateStatus(): void {
@@ -412,12 +571,19 @@ export class InteractionHandler {
     const dofStr = `DOF: ${this.doc.dofCount}`;
     let info = '';
 
-    if (this.tool !== 'select') {
+    const have = this.pendingClicks.length;
+
+    if (this.tool === 'line') {
+      info = have === 0 ? 'Click first point' : 'Click second point';
+    } else if (this.tool === 'circle') {
+      info = have === 0 ? 'Click center' : 'Click radius point';
+    } else if (this.tool === 'arc') {
+      if (have === 0) info = 'Click center';
+      else if (have === 1) info = 'Click start point';
+      else info = 'Click end point';
+    } else if (this.tool !== 'select' && this.tool !== 'delete' && this.tool !== 'point') {
       const needed = this.getRequiredEntityCount(this.tool as ConstraintType);
-      const have = this.pendingClicks.length;
-      if (this.tool === 'line' || this.tool === 'circle' || this.tool === 'arc') {
-        info = `Click ${have}/${needed === 1 ? 1 : this.tool === 'arc' ? 3 : 2} points`;
-      } else if (have < needed) {
+      if (have < needed) {
         info = `Select ${needed - have} more entit${needed - have === 1 ? 'y' : 'ies'}`;
       }
     } else if (this.selectedEntities.length > 0) {
