@@ -880,3 +880,78 @@ export class PointOnEllipseConstraint extends BaseConstraint {
     return entries;
   }
 }
+
+// ─── Internal: Arc Endpoint Coupling ───────────────────────────────
+
+/**
+ * Couples an arc's explicit start/end endpoint variables to its canonical
+ * (center, radius, theta_start, theta_end) parameterization:
+ *
+ *   sx = cx + r·cos(θs)
+ *   sy = cy + r·sin(θs)
+ *   ex = cx + r·cos(θe)
+ *   ey = cy + r·sin(θe)
+ *
+ * Added automatically when an arc entity is created, so the endpoint
+ * variables can be used like line endpoints for constraints and dragging.
+ * Net DOF contribution: -4 (balancing the 4 extra endpoint variables),
+ * keeping the arc at 5 effective DOF.
+ */
+export class ArcEndpointCouplingConstraint extends BaseConstraint {
+  readonly type = 'arcEndpointCoupling' as const;
+  readonly dof = 4;
+
+  constructor(
+    private cxi: number, private cyi: number,
+    private ri: number,
+    private tsi: number, private tei: number,
+    private sxi: number, private syi: number,
+    private exi: number, private eyi: number,
+    entityIds: string[], id?: string
+  ) {
+    super(entityIds, [], id);
+  }
+
+  evaluate(q: Vec): Vec {
+    const cx = q[this.cxi], cy = q[this.cyi];
+    const r = q[this.ri];
+    const ts = q[this.tsi], te = q[this.tei];
+    const sx = q[this.sxi], sy = q[this.syi];
+    const ex = q[this.exi], ey = q[this.eyi];
+    return [
+      sx - cx - r * Math.cos(ts),
+      sy - cy - r * Math.sin(ts),
+      ex - cx - r * Math.cos(te),
+      ey - cy - r * Math.sin(te),
+    ];
+  }
+
+  jacobianEntries(q: Vec, row: number): SparseEntry[] {
+    const r = q[this.ri];
+    const ts = q[this.tsi], te = q[this.tei];
+    const cts = Math.cos(ts), sts = Math.sin(ts);
+    const cte = Math.cos(te), ste = Math.sin(te);
+    return [
+      // Row 0: sx - cx - r*cos(ts)
+      { row, col: this.sxi, val: 1 },
+      { row, col: this.cxi, val: -1 },
+      { row, col: this.ri, val: -cts },
+      { row, col: this.tsi, val: r * sts },
+      // Row 1: sy - cy - r*sin(ts)
+      { row: row + 1, col: this.syi, val: 1 },
+      { row: row + 1, col: this.cyi, val: -1 },
+      { row: row + 1, col: this.ri, val: -sts },
+      { row: row + 1, col: this.tsi, val: -r * cts },
+      // Row 2: ex - cx - r*cos(te)
+      { row: row + 2, col: this.exi, val: 1 },
+      { row: row + 2, col: this.cxi, val: -1 },
+      { row: row + 2, col: this.ri, val: -cte },
+      { row: row + 2, col: this.tei, val: r * ste },
+      // Row 3: ey - cy - r*sin(te)
+      { row: row + 3, col: this.eyi, val: 1 },
+      { row: row + 3, col: this.cyi, val: -1 },
+      { row: row + 3, col: this.ri, val: -ste },
+      { row: row + 3, col: this.tei, val: -r * cte },
+    ];
+  }
+}
