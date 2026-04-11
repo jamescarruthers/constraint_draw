@@ -71,6 +71,130 @@
     #status-bar .dof-ok { color: #4ecca3; }
     #status-bar .dof-under { color: #5dade2; }
     #status-bar .dof-over { color: #e94560; }
+
+    #info-panel {
+      width: 260px;
+      background: #16213e;
+      padding: 12px;
+      overflow-y: auto;
+      border-left: 1px solid #0f3460;
+      font-size: 12px;
+    }
+    #info-panel h2 {
+      font-size: 14px;
+      color: #e94560;
+      margin: 0 0 8px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+    #info-panel h3 {
+      font-size: 11px;
+      color: #5dade2;
+      margin: 10px 0 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    #info-panel .empty {
+      color: #6a7aa0;
+      font-style: italic;
+    }
+    #info-panel .summary-line {
+      color: #a0a0c0;
+      font-family: monospace;
+      padding: 2px 0;
+    }
+    #info-panel .entity-card {
+      background: #0f1a30;
+      border-radius: 4px;
+      padding: 8px;
+      margin-bottom: 10px;
+    }
+    #info-panel .entity-header {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 6px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #1a2444;
+    }
+    #info-panel .entity-type {
+      background: #4ecca3;
+      color: #0f1a30;
+      font-weight: bold;
+      padding: 2px 6px;
+      border-radius: 3px;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.5px;
+    }
+    #info-panel .entity-id {
+      color: #c0c0d0;
+      font-family: monospace;
+      font-size: 11px;
+    }
+    #info-panel .entity-construction {
+      background: #7a6f9c;
+      color: #0f1a30;
+      font-weight: bold;
+      padding: 2px 5px;
+      border-radius: 3px;
+      font-size: 9px;
+      letter-spacing: 0.5px;
+    }
+    #info-panel .entity-details .detail-line {
+      font-family: monospace;
+      color: #a0a0c0;
+      padding: 1px 0;
+      font-size: 11px;
+    }
+    #info-panel .entity-constraints {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid #1a2444;
+    }
+    #info-panel .group-label {
+      color: #5dade2;
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin: 4px 0 2px;
+    }
+    #info-panel .constraint-line {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 6px;
+      background: #1a2444;
+      border-radius: 3px;
+      margin-bottom: 2px;
+    }
+    #info-panel .constraint-desc {
+      color: #e0e0e0;
+      font-size: 11px;
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #info-panel .constraint-delete {
+      background: none;
+      border: none;
+      color: #e94560;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 0 4px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    #info-panel .constraint-delete:hover { color: #ff4060; }
+    #info-panel .no-constraints {
+      color: #6a7aa0;
+      font-style: italic;
+      font-size: 11px;
+      padding: 4px 0;
+    }
   </style>
 </head>
 <body>
@@ -122,6 +246,10 @@
         <span id="status-dof">DOF: —</span>
         <span id="status-info"></span>
       </div>
+    </div>
+    <div id="info-panel">
+      <h2>Info</h2>
+      <p class="empty">Select an entity to see details</p>
     </div>
   </div>
   <script type="module" src="/src/main.ts"></script>

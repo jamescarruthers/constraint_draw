@@ -2,6 +2,7 @@ import { SketchDocument } from './sketch';
 import { Renderer } from './ui/renderer';
 import { InteractionHandler, ToolMode } from './ui/interaction';
 import { sketchToSVG, svgToSketch } from './svgio';
+import { renderInfoPanel } from './ui/infopanel';
 
 function main(): void {
   const canvas = document.getElementById('sketch-canvas') as HTMLCanvasElement;
@@ -29,6 +30,18 @@ function main(): void {
         ? 'dof-under'
         : 'dof-over';
     infoEl.textContent = info;
+  };
+
+  // Info panel (right side)
+  const infoPanelEl = document.getElementById('info-panel')!;
+  handler.onInfoPanelUpdate = (selected) => {
+    renderInfoPanel(infoPanelEl, doc, selected, {
+      onDeleteConstraint: (id) => {
+        doc.removeConstraint(id);
+        doc.solve();
+        handler.renderFrame();
+      },
+    });
   };
 
   // Toolbar buttons
