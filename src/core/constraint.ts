@@ -27,6 +27,17 @@ export abstract class BaseConstraint {
 
   abstract evaluate(q: Vec): Vec;
   abstract jacobianEntries(q: Vec, rowOffset: number): SparseEntry[];
+
+  /**
+   * Update this constraint's dimensional parameters in place. Called by
+   * the info panel when the user edits a value. Default implementation
+   * just overwrites `params`; subclasses with cached state (e.g.
+   * FixedAngleConstraint's sin/cos) override to keep their caches
+   * consistent.
+   */
+  setParams(params: number[]): void {
+    this.params = [...params];
+  }
 }
 
 // ─── Point Constraints ─────────────────────────────────────────────
@@ -80,6 +91,12 @@ export class FixedPointConstraint extends BaseConstraint {
       { row, col: this.xi, val: 1 },
       { row: row + 1, col: this.yi, val: 1 },
     ];
+  }
+
+  setParams(params: number[]): void {
+    super.setParams(params);
+    this.xf = params[0];
+    this.yf = params[1];
   }
 }
 
@@ -408,6 +425,11 @@ export class FixedLengthConstraint extends BaseConstraint {
       { row, col: this.y2, val: 2 * dy },
     ];
   }
+
+  setParams(params: number[]): void {
+    super.setParams(params);
+    this.length = params[0];
+  }
 }
 
 /** Fixed Angle: angle of line from +X axis = theta. Uses: (x2-x1)sin(θ) - (y2-y1)cos(θ) = 0 */
@@ -440,6 +462,13 @@ export class FixedAngleConstraint extends BaseConstraint {
       { row, col: this.x2, val: this.sinT },
       { row, col: this.y2, val: -this.cosT },
     ];
+  }
+
+  setParams(params: number[]): void {
+    super.setParams(params);
+    this.theta = params[0];
+    this.sinT = Math.sin(this.theta);
+    this.cosT = Math.cos(this.theta);
   }
 }
 
@@ -499,6 +528,11 @@ export class AngleBetweenConstraint extends BaseConstraint {
     addEntry(this.by2, dAx, dAy);
 
     return entries;
+  }
+
+  setParams(params: number[]): void {
+    super.setParams(params);
+    this.phi = params[0];
   }
 }
 
@@ -607,6 +641,11 @@ export class FixedRadiusConstraint extends BaseConstraint {
 
   jacobianEntries(_q: Vec, row: number): SparseEntry[] {
     return [{ row, col: this.ri, val: 1 }];
+  }
+
+  setParams(params: number[]): void {
+    super.setParams(params);
+    this.target = params[0];
   }
 }
 
@@ -793,6 +832,11 @@ export class HorizontalDistConstraint extends BaseConstraint {
       { row, col: this.x2, val: 1 },
     ];
   }
+
+  setParams(params: number[]): void {
+    super.setParams(params);
+    this.dist = params[0];
+  }
 }
 
 /** Vertical distance: y2 - y1 - d = 0 */
@@ -817,6 +861,11 @@ export class VerticalDistConstraint extends BaseConstraint {
       { row, col: this.y1, val: -1 },
       { row, col: this.y2, val: 1 },
     ];
+  }
+
+  setParams(params: number[]): void {
+    super.setParams(params);
+    this.dist = params[0];
   }
 }
 

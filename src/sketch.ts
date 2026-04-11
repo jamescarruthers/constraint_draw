@@ -155,6 +155,70 @@ export class SketchDocument {
     this.markDirty();
   }
 
+  /** Update a dimensional constraint's parameter values in place. */
+  updateConstraintParams(constraintId: string, params: number[]): boolean {
+    const c = this.constraints.find(x => x.id === constraintId);
+    if (!c) return false;
+    c.setParams(params);
+    this.markDirty();
+    return true;
+  }
+
+  /**
+   * Reassign one of a constraint's entity slots to a different entity.
+   * Re-creates the underlying constraint in place with the new target
+   * (keeping the same id), using the target entity's default sub-part.
+   */
+  reassignConstraintEntity(
+    constraintId: string,
+    slotIndex: number,
+    newEntityId: string
+  ): boolean {
+    const idx = this.constraints.findIndex(c => c.id === constraintId);
+    if (idx < 0) return false;
+
+    const old = this.constraints[idx];
+    if (slotIndex < 0 || slotIndex >= old.entityIds.length) return false;
+    if (old.entityIds[slotIndex] === newEntityId) return true;
+
+    const newEntityIds = [...old.entityIds];
+    newEntityIds[slotIndex] = newEntityId;
+
+    const entities = newEntityIds.map(eid => this.getEntity(eid)).filter(Boolean) as Entity[];
+    if (entities.length !== newEntityIds.length) return false;
+
+    const rebuilt = this.createConstraint(old.type, entities, [...old.params], old.id);
+    if (!rebuilt) return false;
+
+    this.constraints[idx] = rebuilt;
+    this.markDirty();
+    return true;
+  }
+
+  /**
+   * Rename an entity. Updates entity.id and every constraint's entityIds
+   * that referenced the old id. Returns false if newId is empty, already
+   * in use, or the oldId doesn't exist.
+   */
+  renameEntity(oldId: string, newId: string): boolean {
+    const trimmed = newId.trim();
+    if (!trimmed) return false;
+    if (oldId === trimmed) return true;
+    if (this.entities.some(e => e.id === trimmed)) return false;
+
+    const entity = this.getEntity(oldId);
+    if (!entity) return false;
+
+    entity.id = trimmed;
+    for (const c of this.constraints) {
+      for (let i = 0; i < c.entityIds.length; i++) {
+        if (c.entityIds[i] === oldId) c.entityIds[i] = trimmed;
+      }
+    }
+    this.markDirty();
+    return true;
+  }
+
   private createConstraint(
     type: ConstraintType,
     entities: Entity[],
