@@ -640,7 +640,9 @@ export class InteractionHandler {
     if (!this.onStatusUpdate) return;
 
     const stateStr = this.doc.state.toUpperCase();
-    const dofStr = `DOF: ${this.doc.dofCount}`;
+    const ms = this.doc.lastSolveMs;
+    const msStr = ms < 1 ? `${ms.toFixed(2)}ms` : `${ms.toFixed(1)}ms`;
+    const dofStr = `DOF: ${this.doc.dofCount} · solve ${msStr}`;
     let info = '';
 
     const have = this.pendingClicks.length;

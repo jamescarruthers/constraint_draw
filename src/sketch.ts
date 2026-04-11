@@ -370,13 +370,18 @@ export class SketchDocument {
     }
   }
 
+  /** Wall-clock duration of the last solve in milliseconds */
+  lastSolveMs = 0;
+
   solve(): boolean {
     if (this.constraints.length === 0) {
       this.state = 'solved';
+      this.lastSolveMs = 0;
       return true;
     }
 
     this.state = 'solving';
+    const t0 = performance.now();
     this.graph.build(this.entities, this.constraints);
 
     // Solve each connected component independently
@@ -395,6 +400,7 @@ export class SketchDocument {
       }
     }
 
+    this.lastSolveMs = performance.now() - t0;
     this.state = allConverged ? 'solved' : 'conflict';
     this.runDOFAnalysis();
     return allConverged;
