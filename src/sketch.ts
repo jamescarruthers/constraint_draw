@@ -104,12 +104,20 @@ export class SketchDocument {
     type: ConstraintType,
     entityIds: string[],
     params: number[] = [],
-    id?: string
+    id?: string,
+    /**
+     * Optional per-entity overrides for the "point vars" used by constraints
+     * like coincident, midpoint, point-on-line, etc. When provided for a given
+     * entity slot, those variable indices are used instead of the default
+     * (which picks the first endpoint/center). This lets callers express
+     * intent like "the p2 endpoint of this line".
+     */
+    pointVarOverrides?: (([number, number] | null) | undefined)[]
   ): BaseConstraint | null {
     const entities = entityIds.map(eid => this.getEntity(eid)).filter(Boolean) as Entity[];
     if (entities.length !== entityIds.length) return null;
 
-    const constraint = this.createConstraint(type, entities, params, id);
+    const constraint = this.createConstraint(type, entities, params, id, pointVarOverrides);
     if (!constraint) return null;
 
     this.constraints.push(constraint);
@@ -126,50 +134,56 @@ export class SketchDocument {
     type: ConstraintType,
     entities: Entity[],
     params: number[],
-    id?: string
+    id?: string,
+    pointVarOverrides?: (([number, number] | null) | undefined)[]
   ): BaseConstraint | null {
     const eids = entities.map(e => e.id);
+    const pv = (i: number, ent: Entity): [number, number] | null => {
+      const override = pointVarOverrides?.[i];
+      if (override) return override;
+      return this.getPointVars(ent);
+    };
 
     switch (type) {
       case 'coincident': {
-        // Two points
+        // Two points (or line endpoints / circle centers)
         const [a, b] = entities;
         if (!a || !b) return null;
-        const av = this.getPointVars(a);
-        const bv = this.getPointVars(b);
+        const av = pv(0, a);
+        const bv = pv(1, b);
         if (!av || !bv) return null;
         return new CoincidentConstraint(av[0], av[1], bv[0], bv[1], eids, id);
       }
       case 'fixed': {
         const [a] = entities;
         if (!a) return null;
-        const av = this.getPointVars(a);
+        const av = pv(0, a);
         if (!av) return null;
         return new FixedPointConstraint(av[0], av[1], this.q[av[0]], this.q[av[1]], eids, id);
       }
       case 'pointOnLine': {
         const [pt, line] = entities;
         if (!pt || !line || line.type !== 'line') return null;
-        const pv = this.getPointVars(pt);
-        if (!pv) return null;
+        const ptv = pv(0, pt);
+        if (!ptv) return null;
         const lv = line.vars;
-        return new PointOnLineConstraint(pv[0], pv[1], lv[0], lv[1], lv[2], lv[3], eids, id);
+        return new PointOnLineConstraint(ptv[0], ptv[1], lv[0], lv[1], lv[2], lv[3], eids, id);
       }
       case 'pointOnCircle': {
         const [pt, circ] = entities;
         if (!pt || !circ) return null;
-        const pv = this.getPointVars(pt);
-        if (!pv) return null;
-        const cv = circ.type === 'circle' ? circ.vars : circ.vars; // arc also has cx,cy,r
-        return new PointOnCircleConstraint(pv[0], pv[1], cv[0], cv[1], cv[2], eids, id);
+        const ptv = pv(0, pt);
+        if (!ptv) return null;
+        const cv = circ.vars;
+        return new PointOnCircleConstraint(ptv[0], ptv[1], cv[0], cv[1], cv[2], eids, id);
       }
       case 'midpoint': {
         const [pt, line] = entities;
         if (!pt || !line || line.type !== 'line') return null;
-        const pv = this.getPointVars(pt);
-        if (!pv) return null;
+        const ptv = pv(0, pt);
+        if (!ptv) return null;
         const lv = line.vars;
-        return new MidpointConstraint(pv[0], pv[1], lv[0], lv[1], lv[2], lv[3], eids, id);
+        return new MidpointConstraint(ptv[0], ptv[1], lv[0], lv[1], lv[2], lv[3], eids, id);
       }
       case 'horizontal': {
         const [line] = entities;
@@ -227,8 +241,8 @@ export class SketchDocument {
       case 'symmetric': {
         const [ptA, ptB, line] = entities;
         if (!ptA || !ptB || !line || line.type !== 'line') return null;
-        const pav = this.getPointVars(ptA);
-        const pbv = this.getPointVars(ptB);
+        const pav = pv(0, ptA);
+        const pbv = pv(1, ptB);
         if (!pav || !pbv) return null;
         const lv = line.vars;
         return new SymmetricConstraint(pav[0], pav[1], pbv[0], pbv[1], lv[0], lv[1], lv[2], lv[3], eids, id);
@@ -280,8 +294,8 @@ export class SketchDocument {
       case 'horizontalDist': {
         const [a, b] = entities;
         if (!a || !b) return null;
-        const av = this.getPointVars(a);
-        const bv = this.getPointVars(b);
+        const av = pv(0, a);
+        const bv = pv(1, b);
         if (!av || !bv) return null;
         const d = params[0] ?? (this.q[bv[0]] - this.q[av[0]]);
         return new HorizontalDistConstraint(av[0], bv[0], d, eids, id);
@@ -289,8 +303,8 @@ export class SketchDocument {
       case 'verticalDist': {
         const [a, b] = entities;
         if (!a || !b) return null;
-        const av = this.getPointVars(a);
-        const bv = this.getPointVars(b);
+        const av = pv(0, a);
+        const bv = pv(1, b);
         if (!av || !bv) return null;
         const d = params[0] ?? (this.q[bv[1]] - this.q[av[1]]);
         return new VerticalDistConstraint(av[1], bv[1], d, eids, id);

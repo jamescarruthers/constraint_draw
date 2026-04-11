@@ -32,6 +32,17 @@ function main(): void {
 
   // Toolbar buttons
   const buttons = document.querySelectorAll<HTMLButtonElement>('#toolbar button');
+
+  const setActiveButton = (tool: ToolMode) => {
+    buttons.forEach(b => {
+      if (b.dataset.tool === tool) b.classList.add('active');
+      else b.classList.remove('active');
+    });
+  };
+
+  // Keep toolbar in sync when handler auto-returns to select
+  handler.onToolChange = (tool) => setActiveButton(tool);
+
   buttons.forEach(btn => {
     btn.addEventListener('click', () => {
       const tool = btn.dataset.tool as ToolMode;
@@ -46,10 +57,7 @@ function main(): void {
         return;
       }
 
-      // Update active button
-      buttons.forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-
+      setActiveButton(tool);
       handler.setTool(tool);
     });
   });
@@ -61,26 +69,31 @@ function main(): void {
 }
 
 function createDemoSketch(doc: SketchDocument): void {
-  // Create a simple rectangle-like shape to demonstrate constraints
-  const p1 = doc.addEntity('point', [100, 100]);
-  const p2 = doc.addEntity('point', [300, 100]);
-  const p3 = doc.addEntity('point', [300, 200]);
-  const p4 = doc.addEntity('point', [100, 200]);
-
+  // Four lines forming a rough rectangle, with coincident constraints
+  // joining their endpoints (showing the line-endpoint coincident fix).
   const l1 = doc.addEntity('line', [100, 100, 300, 100]);
   const l2 = doc.addEntity('line', [300, 100, 300, 200]);
   const l3 = doc.addEntity('line', [300, 200, 100, 200]);
   const l4 = doc.addEntity('line', [100, 200, 100, 100]);
 
-  // Coincident constraints to connect corners
-  doc.addConstraint('coincident', [p1.id, l1.id]);   // p1 = l1.start
-  doc.addConstraint('coincident', [p2.id, l2.id]);   // p2 = l2.start
+  // Join corners: l1.p2 = l2.p1, l2.p2 = l3.p1, l3.p2 = l4.p1, l4.p2 = l1.p1
+  const join = (a: typeof l1, aEnd: 'p1' | 'p2', b: typeof l1, bEnd: 'p1' | 'p2') => {
+    const av: [number, number] = aEnd === 'p1'
+      ? [a.vars[0], a.vars[1]]
+      : [a.vars[2], a.vars[3]];
+    const bv: [number, number] = bEnd === 'p1'
+      ? [b.vars[0], b.vars[1]]
+      : [b.vars[2], b.vars[3]];
+    doc.addConstraint('coincident', [a.id, b.id], [], undefined, [av, bv]);
+  };
 
-  // Horizontal constraints
+  join(l1, 'p2', l2, 'p1');
+  join(l2, 'p2', l3, 'p1');
+  join(l3, 'p2', l4, 'p1');
+  join(l4, 'p2', l1, 'p1');
+
   doc.addConstraint('horizontal', [l1.id]);
   doc.addConstraint('horizontal', [l3.id]);
-
-  // Vertical constraints
   doc.addConstraint('vertical', [l2.id]);
   doc.addConstraint('vertical', [l4.id]);
 
