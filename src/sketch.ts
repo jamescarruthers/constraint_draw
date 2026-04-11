@@ -604,25 +604,101 @@ export class SketchDocument {
     };
   }
 
-  static fromJSON(data: { entities: any[]; constraints: any[] }): SketchDocument {
-    const doc = new SketchDocument();
+  /**
+   * Replace this document's contents with the data from a JSON snapshot.
+   * Used by undo/redo and the SVG loader so the existing document instance
+   * (and therefore all references held by the renderer / interaction
+   * handler) can be reused.
+   */
+  loadFromJSON(data: { entities: any[]; constraints: any[] }): void {
+    this.entities = [];
+    this.constraints = [];
+    this.q = [];
+    this.fixedVars = new Set();
+    this.nextVarOffset = 0;
+    this.underConstrainedIds = new Set();
+    this.overConstrainedIds = new Set();
 
     for (const e of data.entities) {
-      const entity = doc.addEntity(e.type, e.q, e.id);
+      const entity = this.addEntity(e.type, e.q, e.id);
       if (e.fixed) {
         for (let i = 0; i < e.fixed.length; i++) {
           entity.fixed[i] = e.fixed[i];
-          if (e.fixed[i]) doc.fixedVars.add(entity.vars[i]);
+          if (e.fixed[i]) this.fixedVars.add(entity.vars[i]);
         }
       }
       if (e.construction) entity.construction = true;
     }
 
     for (const c of data.constraints) {
-      doc.addConstraint(c.type, c.entities, c.params || [], c.id);
+      this.addConstraint(c.type, c.entities, c.params || [], c.id);
     }
 
-    doc.solve();
+    this.solve();
+  }
+
+  static fromJSON(data: { entities: any[]; constraints: any[] }): SketchDocument {
+    const doc = new SketchDocument();
+    doc.loadFromJSON(data);
     return doc;
+  }
+
+  // ─── Undo / Redo ───────────────────────────────────────────────
+
+  private undoStack: string[] = [];
+  private redoStack: string[] = [];
+  private readonly MAX_UNDO = 200;
+
+  /**
+   * Snapshot the current state onto the undo stack. Call this BEFORE
+   * performing any user-initiated mutation so that undo() can restore
+   * the pre-mutation state.
+   */
+  pushUndo(): void {
+    const snapshot = JSON.stringify(this.toJSON());
+    this.undoStack.push(snapshot);
+    if (this.undoStack.length > this.MAX_UNDO) this.undoStack.shift();
+    // Any new mutation invalidates the redo stack
+    this.redoStack = [];
+  }
+
+  canUndo(): boolean { return this.undoStack.length > 0; }
+  canRedo(): boolean { return this.redoStack.length > 0; }
+
+  /**
+   * Restore the most recent snapshot from the undo stack. Pushes the
+   * current state onto the redo stack first so redo() can reverse it.
+   */
+  undo(): boolean {
+    const snapshot = this.undoStack.pop();
+    if (!snapshot) return false;
+    this.redoStack.push(JSON.stringify(this.toJSON()));
+    if (this.redoStack.length > this.MAX_UNDO) this.redoStack.shift();
+    this.loadFromJSON(JSON.parse(snapshot));
+    return true;
+  }
+
+  /** Reapply the most recent undone snapshot. */
+  redo(): boolean {
+    const snapshot = this.redoStack.pop();
+    if (!snapshot) return false;
+    this.undoStack.push(JSON.stringify(this.toJSON()));
+    if (this.undoStack.length > this.MAX_UNDO) this.undoStack.shift();
+    this.loadFromJSON(JSON.parse(snapshot));
+    return true;
+  }
+
+  /**
+   * Drop the most recently pushed undo snapshot without restoring anything.
+   * Useful when a caller pushed an undo speculatively and then found the
+   * mutation didn't actually happen (e.g. a rename was rejected).
+   */
+  dropLastUndo(): void {
+    this.undoStack.pop();
+  }
+
+  clearHistory(): void {
+    this.undoStack = [];
+    this.redoStack = [];
   }
 }
