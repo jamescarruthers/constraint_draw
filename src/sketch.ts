@@ -370,13 +370,18 @@ export class SketchDocument {
     }
   }
 
+  /** Wall-clock duration of the last solve in milliseconds */
+  lastSolveMs = 0;
+
   solve(): boolean {
     if (this.constraints.length === 0) {
       this.state = 'solved';
+      this.lastSolveMs = 0;
       return true;
     }
 
     this.state = 'solving';
+    const t0 = performance.now();
     this.graph.build(this.entities, this.constraints);
 
     // Solve each connected component independently
@@ -395,6 +400,7 @@ export class SketchDocument {
       }
     }
 
+    this.lastSolveMs = performance.now() - t0;
     this.state = allConverged ? 'solved' : 'conflict';
     this.runDOFAnalysis();
     return allConverged;
@@ -402,24 +408,50 @@ export class SketchDocument {
 
   // ─── Drag Operations ───────────────────────────────────────────
 
-  startDrag(grabVarX: number, grabVarY: number): void {
+  /** Variables temporarily pinned for the duration of the current drag */
+  private tempFixedVars: number[] = [];
+
+  startDrag(
+    _grabVarX: number,
+    _grabVarY: number,
+    tempFixed: number[] = []
+  ): void {
     this.state = 'dragging';
+    this.tempFixedVars = tempFixed;
     this.dragIntegrator.init(this.q);
   }
 
   dragStep(grabVars: [number, number], cursor: [number, number]): void {
+    // Build an effective fixed set that combines permanent and temporary pins
+    let effectiveFixed = this.fixedVars;
+    if (this.tempFixedVars.length > 0) {
+      effectiveFixed = new Set(this.fixedVars);
+      for (const v of this.tempFixedVars) effectiveFixed.add(v);
+    }
+
     this.q = this.dragIntegrator.stepSimple(
       this.q,
       this.constraints,
-      this.fixedVars,
+      effectiveFixed,
       grabVars,
       cursor
     );
   }
 
   endDrag(): void {
+    this.tempFixedVars = [];
     this.state = 'dirty';
     this.solve();
+  }
+
+  // ─── Construction Toggle ───────────────────────────────────────
+
+  toggleConstruction(entityId: string): void {
+    const entity = this.getEntity(entityId);
+    if (!entity) return;
+    entity.construction = !entity.construction;
+    // Construction doesn't affect the solver, but repaint
+    this.state = this.state === 'solved' ? 'solved' : this.state;
   }
 
   // ─── Serialization ─────────────────────────────────────────────
@@ -431,6 +463,7 @@ export class SketchDocument {
         type: e.type,
         q: e.vars.map(v => this.q[v]),
         fixed: e.fixed,
+        construction: e.construction,
       })),
       constraints: this.constraints.map(c => ({
         id: c.id,
@@ -452,6 +485,7 @@ export class SketchDocument {
           if (e.fixed[i]) doc.fixedVars.add(entity.vars[i]);
         }
       }
+      if (e.construction) entity.construction = true;
     }
 
     for (const c of data.constraints) {
