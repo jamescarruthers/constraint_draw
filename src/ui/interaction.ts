@@ -11,7 +11,6 @@ export type ToolMode =
   | 'circle'
   | 'arc'
   | 'delete'
-  | 'construction'
   | 'save'
   | 'load'
   | ConstraintType;
@@ -34,6 +33,9 @@ export class InteractionHandler {
   tool: ToolMode = 'select';
   selectedEntities: Entity[] = [];
   private pendingClicks: PendingClick[] = [];
+
+  /** When true, newly drawn entities are marked as construction geometry */
+  constructionMode = false;
 
   /** Current mouse world position — used for drawing previews */
   private mouseWorld: [number, number] = [0, 0];
@@ -130,9 +132,6 @@ export class InteractionHandler {
       case 'delete':
         this.handleDelete(hits);
         break;
-      case 'construction':
-        this.handleToggleConstruction(hits);
-        break;
       case 'point':
         this.handleAddPoint(wx, wy);
         break;
@@ -152,10 +151,15 @@ export class InteractionHandler {
     }
   }
 
-  private handleToggleConstruction(hits: HitResult[]): void {
-    if (hits.length === 0) return;
-    this.doc.toggleConstruction(hits[0].entity.id);
-    this.renderFrame();
+  /** Toggle construction mode — newly drawn entities become construction while on */
+  setConstructionMode(on: boolean): void {
+    this.constructionMode = on;
+    this.updateStatus();
+  }
+
+  /** Apply the current construction mode to a freshly created entity */
+  private applyConstructionMode(entity: Entity): void {
+    if (this.constructionMode) entity.construction = true;
   }
 
   private onMouseMove(e: MouseEvent): void {
@@ -175,9 +179,9 @@ export class InteractionHandler {
       return;
     }
 
-    // Update hover for any "targeting" tool (select, delete, construction,
-    // or any constraint tool). Drawing tools (point/line/circle/arc) rely
-    // on the snap-target marker instead.
+    // Update hover for any "targeting" tool (select, delete, or any
+    // constraint tool). Drawing tools (point/line/circle/arc) rely on the
+    // snap-target marker instead.
     const targeting = this.isTargetingTool(this.tool);
     const prevHoverKey = this.hoverKey(this.hoveredHit);
     if (targeting) {
@@ -208,7 +212,7 @@ export class InteractionHandler {
 
   /** Tools where hovering over an entity gives meaningful feedback */
   private isTargetingTool(tool: ToolMode): boolean {
-    if (tool === 'select' || tool === 'delete' || tool === 'construction') return true;
+    if (tool === 'select' || tool === 'delete') return true;
     if (tool === 'point' || tool === 'line' || tool === 'circle' || tool === 'arc') return false;
     if (tool === 'save' || tool === 'load') return false;
     return true; // any ConstraintType
@@ -256,6 +260,12 @@ export class InteractionHandler {
       }
       this.selectedEntities = [];
       this.doc.solve();
+      this.renderFrame();
+    } else if ((e.key === 'c' || e.key === 'C') && this.selectedEntities.length > 0) {
+      // Toggle construction flag on selected entities
+      for (const ent of this.selectedEntities) {
+        this.doc.toggleConstruction(ent.id);
+      }
       this.renderFrame();
     }
   }
@@ -314,7 +324,8 @@ export class InteractionHandler {
   }
 
   private handleAddPoint(wx: number, wy: number): void {
-    this.doc.addEntity('point', [wx, wy]);
+    const p = this.doc.addEntity('point', [wx, wy]);
+    this.applyConstructionMode(p);
     this.doc.solve();
     this.returnToSelect();
   }
@@ -330,6 +341,7 @@ export class InteractionHandler {
     if (this.pendingClicks.length === 2) {
       const [p1, p2] = this.pendingClicks;
       const line = this.doc.addEntity('line', [p1.wx, p1.wy, p2.wx, p2.wy]);
+      this.applyConstructionMode(line);
 
       // Auto-coincident line endpoints with clicked existing points/line-endpoints
       this.autoCoincidentEndpoint(line, 0, p1.hit);
@@ -404,7 +416,8 @@ export class InteractionHandler {
     if (this.pendingClicks.length === 2) {
       const [center, edge] = this.pendingClicks;
       const r = Math.hypot(edge.wx - center.wx, edge.wy - center.wy);
-      this.doc.addEntity('circle', [center.wx, center.wy, Math.max(r, 10)]);
+      const c = this.doc.addEntity('circle', [center.wx, center.wy, Math.max(r, 10)]);
+      this.applyConstructionMode(c);
       this.pendingClicks = [];
       this.doc.solve();
       this.returnToSelect();
@@ -425,7 +438,8 @@ export class InteractionHandler {
       const r = Math.hypot(start.wx - center.wx, start.wy - center.wy);
       const thetaStart = Math.atan2(start.wy - center.wy, start.wx - center.wx);
       const thetaEnd = Math.atan2(end.wy - center.wy, end.wx - center.wx);
-      this.doc.addEntity('arc', [center.wx, center.wy, Math.max(r, 10), thetaStart, thetaEnd]);
+      const a = this.doc.addEntity('arc', [center.wx, center.wy, Math.max(r, 10), thetaStart, thetaEnd]);
+      this.applyConstructionMode(a);
       this.pendingClicks = [];
       this.doc.solve();
       this.returnToSelect();
@@ -639,7 +653,8 @@ export class InteractionHandler {
   private updateStatus(): void {
     if (!this.onStatusUpdate) return;
 
-    const stateStr = this.doc.state.toUpperCase();
+    const cm = this.constructionMode ? '[CONSTRUCTION] ' : '';
+    const stateStr = cm + this.doc.state.toUpperCase();
     const ms = this.doc.lastSolveMs;
     const msStr = ms < 1 ? `${ms.toFixed(2)}ms` : `${ms.toFixed(1)}ms`;
     const dofStr = `DOF: ${this.doc.dofCount} · solve ${msStr}`;

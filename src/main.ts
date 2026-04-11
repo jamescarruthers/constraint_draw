@@ -1,6 +1,7 @@
 import { SketchDocument } from './sketch';
 import { Renderer } from './ui/renderer';
 import { InteractionHandler, ToolMode } from './ui/interaction';
+import { sketchToSVG, svgToSketch } from './svgio';
 
 function main(): void {
   const canvas = document.getElementById('sketch-canvas') as HTMLCanvasElement;
@@ -35,9 +36,18 @@ function main(): void {
 
   const setActiveButton = (tool: ToolMode) => {
     buttons.forEach(b => {
+      // Skip action buttons — only one tool button is "active" at a time.
+      if (b.dataset.action) return;
       if (b.dataset.tool === tool) b.classList.add('active');
       else b.classList.remove('active');
     });
+  };
+
+  const updateConstructionBtn = () => {
+    const btn = document.querySelector<HTMLButtonElement>('[data-action="constructionMode"]');
+    if (!btn) return;
+    btn.textContent = `Construction Mode: ${handler.constructionMode ? 'ON' : 'OFF'}`;
+    btn.classList.toggle('active', handler.constructionMode);
   };
 
   // Keep toolbar in sync when handler auto-returns to select
@@ -45,18 +55,25 @@ function main(): void {
 
   buttons.forEach(btn => {
     btn.addEventListener('click', () => {
-      const tool = btn.dataset.tool as ToolMode;
-      if (!tool) return;
+      const action = btn.dataset.action;
+      const tool = btn.dataset.tool as ToolMode | undefined;
 
-      if (tool === 'save') {
+      if (action === 'save') {
         saveSketch(doc);
         return;
       }
-      if (tool === 'load') {
-        loadSketch(doc, renderer, handler);
+      if (action === 'load') {
+        loadSketch(doc, handler);
+        return;
+      }
+      if (action === 'constructionMode') {
+        handler.setConstructionMode(!handler.constructionMode);
+        updateConstructionBtn();
+        handler.renderFrame();
         return;
       }
 
+      if (!tool) return;
       setActiveButton(tool);
       handler.setTool(tool);
     });
@@ -66,6 +83,7 @@ function main(): void {
   createDemoSketch(doc);
   doc.solve();
   handler.renderFrame();
+  updateConstructionBtn();
 }
 
 function createDemoSketch(doc: SketchDocument): void {
@@ -102,33 +120,28 @@ function createDemoSketch(doc: SketchDocument): void {
 }
 
 function saveSketch(doc: SketchDocument): void {
-  const json = JSON.stringify(doc.toJSON(), null, 2);
-  const blob = new Blob([json], { type: 'application/json' });
+  const svg = sketchToSVG(doc);
+  const blob = new Blob([svg], { type: 'image/svg+xml' });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'sketch.json';
+  a.download = 'sketch.svg';
   a.click();
   URL.revokeObjectURL(url);
 }
 
-function loadSketch(
-  doc: SketchDocument,
-  renderer: Renderer,
-  handler: InteractionHandler
-): void {
+function loadSketch(doc: SketchDocument, handler: InteractionHandler): void {
   const input = document.createElement('input');
   input.type = 'file';
-  input.accept = '.json';
+  input.accept = '.svg,image/svg+xml';
   input.addEventListener('change', () => {
     const file = input.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const data = JSON.parse(reader.result as string);
-        const newDoc = SketchDocument.fromJSON(data);
-        // Copy state into existing doc
+        const newDoc = svgToSketch(reader.result as string);
+        // Copy state into existing doc so the handler's reference stays valid
         doc.entities = newDoc.entities;
         doc.constraints = newDoc.constraints;
         doc.q = newDoc.q;
@@ -138,6 +151,7 @@ function loadSketch(
         doc.dofCount = newDoc.dofCount;
         doc.underConstrainedIds = newDoc.underConstrainedIds;
         doc.overConstrainedIds = newDoc.overConstrainedIds;
+        doc.lastSolveMs = newDoc.lastSolveMs;
         handler.renderFrame();
       } catch (err) {
         alert('Failed to load sketch: ' + err);
