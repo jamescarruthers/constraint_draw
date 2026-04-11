@@ -684,6 +684,23 @@ export class InteractionHandler {
     const hit = this.pickBestHit(hits);
     this.pendingClicks.push({ wx, wy, entity: hit.entity, hit });
 
+    // Special case: horizontal/vertical distance applied to a single line
+    // (clicked on its body, not an endpoint) dimensions the line's own
+    // p1→p2 vector. This matches the CAD convention of "dimension the
+    // line's horizontal/vertical projection" with a single click.
+    if (
+      (this.tool === 'horizontalDist' || this.tool === 'verticalDist') &&
+      this.pendingClicks.length === 1 &&
+      hit.entity.type === 'line' &&
+      hit.part === 'body'
+    ) {
+      this.applySingleLineDistanceConstraint(
+        hit.entity,
+        this.tool as 'horizontalDist' | 'verticalDist'
+      );
+      return;
+    }
+
     const needed = this.getRequiredEntityCount(this.tool as ConstraintType);
     if (this.pendingClicks.length >= needed) {
       const entityIds = this.pendingClicks.map(c => c.entity!.id);
@@ -712,13 +729,18 @@ export class InteractionHandler {
       this.pendingClicks = [];
 
       // Apply "reference doesn't move" semantics: when the constraint takes
-      // two or more entities, pin the variables of the LAST-clicked entity
-      // for the initial solve so that the subject (first clicked) moves to
-      // satisfy the constraint rather than the solver distributing the
-      // adjustment across both. Fall back to an unpinned solve if the
+      // two or more DIFFERENT entities, pin the variables of the LAST-clicked
+      // entity for the initial solve so that the subject (first clicked)
+      // moves to satisfy the constraint rather than the solver distributing
+      // the adjustment across both. Fall back to an unpinned solve if the
       // pinned version can't converge (e.g. the constraint genuinely
       // requires both entities to move).
-      if (entityIds.length >= 2) {
+      //
+      // When all clicks land on the SAME entity (e.g. both endpoints of one
+      // line for a horizontalDist), skip the pin entirely — the entity
+      // being constrained has to be free to adjust.
+      const uniqueEntityIds = new Set(entityIds);
+      if (entityIds.length >= 2 && uniqueEntityIds.size >= 2) {
         const target = this.doc.getEntity(entityIds[entityIds.length - 1]);
         if (target) {
           const savedQ = [...this.doc.q];
@@ -739,6 +761,83 @@ export class InteractionHandler {
     }
     this.updateStatus();
     this.renderFrame();
+  }
+
+  /**
+   * Apply a horizontalDist or verticalDist constraint to a single line,
+   * dimensioning that line's p1→p2 projection. Prompts the user for a
+   * value, then creates a constraint between the same line's two
+   * endpoints. The solver is run unpinned (the line IS the entity being
+   * constrained, so pinning it would leave no DOF for the solver).
+   */
+  private applySingleLineDistanceConstraint(
+    line: Entity,
+    type: 'horizontalDist' | 'verticalDist'
+  ): void {
+    const v = line.vars;
+    const currentDist =
+      type === 'horizontalDist'
+        ? this.doc.q[v[2]] - this.doc.q[v[0]]
+        : this.doc.q[v[3]] - this.doc.q[v[1]];
+
+    const label = type === 'horizontalDist' ? 'horizontal' : 'vertical';
+    const input = prompt(
+      `Enter ${label} distance:`,
+      String(Math.round(currentDist * 100) / 100)
+    );
+    if (input === null) {
+      this.pendingClicks = [];
+      this.updateStatus();
+      this.renderFrame();
+      return;
+    }
+    const value = parseFloat(input);
+    if (!Number.isFinite(value)) {
+      this.pendingClicks = [];
+      this.returnToSelect();
+      return;
+    }
+
+    this.doc.pushUndo();
+    this.doc.addConstraint(
+      type,
+      [line.id, line.id],
+      [value],
+      undefined,
+      ['p1', 'p2']
+    );
+    this.pendingClicks = [];
+    // No pinning: the line itself has to be free to adjust, otherwise the
+    // solver has no DOF to satisfy the new constraint.
+    this.doc.solve();
+    this.returnToSelect();
+  }
+
+  /**
+   * Resolve a pending click to the actual world-space position of whatever
+   * sub-part was picked (endpoint, center, etc.), falling back to the raw
+   * cursor position when the click didn't land on a point-like part.
+   */
+  private resolveClickWorldPos(click: PendingClick): [number, number] {
+    const hit = click.hit;
+    if (hit) {
+      const e = hit.entity;
+      const q = this.doc.q;
+      if (e.type === 'point') return [q[e.vars[0]], q[e.vars[1]]];
+      if (e.type === 'line') {
+        if (hit.part === 'p1') return [q[e.vars[0]], q[e.vars[1]]];
+        if (hit.part === 'p2') return [q[e.vars[2]], q[e.vars[3]]];
+      }
+      if (e.type === 'arc') {
+        if (hit.part === 'center') return [q[e.vars[0]], q[e.vars[1]]];
+        if (hit.part === 'p1') return [q[e.vars[5]], q[e.vars[6]]];
+        if (hit.part === 'p2') return [q[e.vars[7]], q[e.vars[8]]];
+      }
+      if (e.type === 'circle' || e.type === 'ellipse') {
+        if (hit.part === 'center') return [q[e.vars[0]], q[e.vars[1]]];
+      }
+    }
+    return [click.wx, click.wy];
   }
 
   private getRequiredEntityCount(type: ConstraintType): number {
@@ -805,8 +904,15 @@ export class InteractionHandler {
         return 50;
       }
       case 'horizontalDist':
-      case 'verticalDist':
-        return 100;
+      case 'verticalDist': {
+        // Resolve each click to the world position of its picked sub-part
+        // (an endpoint, center, or the click point as a fallback) and
+        // use the signed difference as the default dimension value.
+        if (clicks.length < 2) return 0;
+        const a = this.resolveClickWorldPos(clicks[0]);
+        const b = this.resolveClickWorldPos(clicks[1]);
+        return type === 'horizontalDist' ? b[0] - a[0] : b[1] - a[1];
+      }
       case 'angleBetween':
         return Math.PI / 2;
       default:
