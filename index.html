@@ -13,56 +13,97 @@
       overflow: hidden;
       height: 100vh;
     }
+
+    /* ─── Layout ─────────────────────────────────────────────── */
+
     #app {
       display: flex;
+      flex-direction: column;
       height: 100vh;
     }
-    #toolbar {
-      width: 220px;
+    #top-bar {
+      display: flex;
+      align-items: center;
       background: #16213e;
-      padding: 12px;
+      padding: 3px 8px;
+      gap: 3px;
+      border-bottom: 1px solid #0f3460;
+      flex-shrink: 0;
+    }
+    #main-area {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
+    #sidebar {
+      width: 44px;
+      background: #16213e;
+      padding: 3px;
       display: flex;
       flex-direction: column;
-      gap: 4px;
+      gap: 2px;
       overflow-y: auto;
       border-right: 1px solid #0f3460;
+      flex-shrink: 0;
     }
-    #toolbar h2 {
-      font-size: 14px;
-      color: #e94560;
-      margin: 8px 0 4px;
-      text-transform: uppercase;
-      letter-spacing: 1px;
-    }
-    #toolbar button {
-      background: #0f3460;
-      color: #e0e0e0;
-      border: 1px solid #1a1a4e;
-      padding: 6px 10px;
-      border-radius: 4px;
-      cursor: pointer;
-      font-size: 12px;
-      text-align: left;
-      transition: background 0.15s;
-    }
-    #toolbar button:hover { background: #1a1a6e; }
-    #toolbar button.active { background: #e94560; color: #fff; }
     #canvas-container {
       flex: 1;
       position: relative;
+      min-width: 0;
     }
     canvas {
       display: block;
       width: 100%;
       height: 100%;
     }
+
+    /* ─── Icon buttons (shared) ──────────────────────────────── */
+
+    .tb { /* tool button */
+      width: 36px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #0f3460;
+      color: #c0c0d0;
+      border: 1px solid #1a1a4e;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 16px;
+      line-height: 1;
+      transition: background 0.12s, color 0.12s;
+      flex-shrink: 0;
+      padding: 0;
+    }
+    .tb:hover { background: #1a1a6e; color: #fff; }
+    .tb.active { background: #e94560; color: #fff; }
+
+    .tb-sep { /* thin vertical/horizontal separator */
+      width: 1px;
+      align-self: stretch;
+      margin: 4px 4px;
+      background: #0f3460;
+    }
+    #sidebar .tb-sep {
+      width: auto;
+      height: 1px;
+      margin: 3px 2px;
+    }
+    #sidebar .tb { width: 36px; }
+
+    /* Smaller font for two-char icons */
+    .tb.sm { font-size: 13px; letter-spacing: -1px; }
+
+    /* ─── Status bar ─────────────────────────────────────────── */
+
     #status-bar {
       position: absolute;
       bottom: 0;
       left: 0;
       right: 0;
-      background: rgba(22, 33, 62, 0.9);
-      padding: 6px 12px;
+      background: rgba(22, 33, 62, 0.92);
+      padding: 5px 12px;
       font-size: 12px;
       display: flex;
       gap: 20px;
@@ -71,6 +112,14 @@
     #status-bar .dof-ok { color: #4ecca3; }
     #status-bar .dof-under { color: #5dade2; }
     #status-bar .dof-over { color: #e94560; }
+    #status-hover {
+      margin-left: auto;
+      color: #8a8ab0;
+      font-style: italic;
+      white-space: nowrap;
+    }
+
+    /* ─── Info panel (right) ─────────────────────────────────── */
 
     #info-panel {
       width: 260px;
@@ -79,6 +128,7 @@
       overflow-y: auto;
       border-left: 1px solid #0f3460;
       font-size: 12px;
+      flex-shrink: 0;
     }
     #info-panel h2 {
       font-size: 14px;
@@ -212,9 +262,7 @@
       border-color: #5dade2;
       background: #1a2444;
     }
-    #info-panel .entity-id-input.invalid {
-      border-color: #e94560;
-    }
+    #info-panel .entity-id-input.invalid { border-color: #e94560; }
     #info-panel .constraint-label {
       color: #a0a0c0;
       font-size: 11px;
@@ -252,65 +300,74 @@
       max-width: 110px;
       outline: none;
     }
-    #info-panel .constraint-reassign:focus {
-      border-color: #5dade2;
-    }
+    #info-panel .constraint-reassign:focus { border-color: #5dade2; }
   </style>
 </head>
 <body>
   <div id="app">
-    <div id="toolbar">
-      <h2>Entities</h2>
-      <button data-tool="point">Point</button>
-      <button data-tool="line">Line</button>
-      <button data-tool="circle">Circle</button>
-      <button data-tool="arc">Arc</button>
 
-      <h2>Constraints</h2>
-      <button data-tool="coincident">Coincident</button>
-      <button data-tool="fixed">Fix Point</button>
-      <button data-tool="horizontal">Horizontal</button>
-      <button data-tool="vertical">Vertical</button>
-      <button data-tool="parallel">Parallel</button>
-      <button data-tool="perpendicular">Perpendicular</button>
-      <button data-tool="tangentLineCircle">Tangent (L-C)</button>
-      <button data-tool="tangentCircleCircle">Tangent (C-C)</button>
-      <button data-tool="equalLength">Equal Length</button>
-      <button data-tool="equalRadius">Equal Radius</button>
-      <button data-tool="concentric">Concentric</button>
-      <button data-tool="pointOnLine">Point on Line</button>
-      <button data-tool="pointOnCircle">Point on Circle</button>
-      <button data-tool="midpoint">Midpoint</button>
-      <button data-tool="collinear">Collinear</button>
-      <button data-tool="symmetric">Symmetric</button>
-
-      <h2>Dimensions</h2>
-      <button data-tool="fixedLength">Fixed Length</button>
-      <button data-tool="fixedAngle">Fixed Angle</button>
-      <button data-tool="angleBetween">Angle Between</button>
-      <button data-tool="fixedRadius">Fixed Radius</button>
-      <button data-tool="horizontalDist">Horiz. Distance</button>
-      <button data-tool="verticalDist">Vert. Distance</button>
-      <button data-tool="perpDistance">Perp. Distance</button>
-
-      <h2>Actions</h2>
-      <button data-tool="select" class="active">Select / Drag</button>
-      <button data-action="constructionMode">Construction Mode: OFF</button>
-      <button data-tool="delete">Delete</button>
-      <button data-action="save">Save SVG</button>
-      <button data-action="load">Load SVG</button>
+    <!-- ═══ Top toolbar: entities + actions ═══ -->
+    <div id="top-bar">
+      <button class="tb active" data-tool="select"  data-desc="Select / Drag (Esc)">↖</button>
+      <div class="tb-sep"></div>
+      <button class="tb" data-tool="point"  data-desc="Draw Point">●</button>
+      <button class="tb" data-tool="line"   data-desc="Draw Line">╱</button>
+      <button class="tb" data-tool="circle" data-desc="Draw Circle">○</button>
+      <button class="tb" data-tool="arc"    data-desc="Draw Arc">◠</button>
+      <div class="tb-sep"></div>
+      <button class="tb" data-action="constructionMode" data-desc="Toggle Construction Mode (C)">⊟</button>
+      <button class="tb" data-tool="delete" data-desc="Delete Entity (Del)">✕</button>
+      <div class="tb-sep"></div>
+      <button class="tb" data-action="save" data-desc="Save sketch as SVG">⤓</button>
+      <button class="tb" data-action="load" data-desc="Load sketch from SVG">⤒</button>
     </div>
-    <div id="canvas-container">
-      <canvas id="sketch-canvas"></canvas>
-      <div id="status-bar">
-        <span id="status-state">IDLE</span>
-        <span id="status-dof">DOF: —</span>
-        <span id="status-info"></span>
+
+    <div id="main-area">
+
+      <!-- ═══ Left sidebar: constraints + dimensions ═══ -->
+      <div id="sidebar">
+        <button class="tb" data-tool="coincident"          data-desc="Coincident">⊕</button>
+        <button class="tb" data-tool="fixed"               data-desc="Fix Point">⊗</button>
+        <button class="tb" data-tool="horizontal"          data-desc="Horizontal">═</button>
+        <button class="tb" data-tool="vertical"            data-desc="Vertical">║</button>
+        <button class="tb" data-tool="parallel"            data-desc="Parallel">∥</button>
+        <button class="tb" data-tool="perpendicular"       data-desc="Perpendicular">⊥</button>
+        <button class="tb" data-tool="tangentLineCircle"   data-desc="Tangent (Line–Circle)">⌒</button>
+        <button class="tb" data-tool="tangentCircleCircle" data-desc="Tangent (Circle–Circle)">⊙</button>
+        <button class="tb" data-tool="equalLength"         data-desc="Equal Length">≐</button>
+        <button class="tb" data-tool="equalRadius"         data-desc="Equal Radius">≑</button>
+        <button class="tb" data-tool="concentric"          data-desc="Concentric">⊚</button>
+        <button class="tb" data-tool="pointOnLine"         data-desc="Point on Line">◉</button>
+        <button class="tb" data-tool="pointOnCircle"       data-desc="Point on Circle">◎</button>
+        <button class="tb" data-tool="midpoint"            data-desc="Midpoint">△</button>
+        <button class="tb" data-tool="collinear"           data-desc="Collinear">≡</button>
+        <button class="tb" data-tool="symmetric"           data-desc="Symmetric">⋈</button>
+        <div class="tb-sep"></div>
+        <button class="tb" data-tool="fixedLength"         data-desc="Fixed Length">↔</button>
+        <button class="tb" data-tool="fixedAngle"          data-desc="Fixed Angle">∠</button>
+        <button class="tb" data-tool="angleBetween"        data-desc="Angle Between">∡</button>
+        <button class="tb" data-tool="fixedRadius"         data-desc="Fixed Radius">⊘</button>
+        <button class="tb sm" data-tool="horizontalDist"   data-desc="Horizontal Distance">↔x</button>
+        <button class="tb sm" data-tool="verticalDist"     data-desc="Vertical Distance">↕y</button>
+        <button class="tb sm" data-tool="perpDistance"      data-desc="Perpendicular Distance">⊥d</button>
       </div>
-    </div>
-    <div id="info-panel">
-      <h2>Info</h2>
-      <p class="empty">Select an entity to see details</p>
+
+      <!-- ═══ Canvas ═══ -->
+      <div id="canvas-container">
+        <canvas id="sketch-canvas"></canvas>
+        <div id="status-bar">
+          <span id="status-state">IDLE</span>
+          <span id="status-dof">DOF: —</span>
+          <span id="status-info"></span>
+          <span id="status-hover"></span>
+        </div>
+      </div>
+
+      <!-- ═══ Info panel (right) ═══ -->
+      <div id="info-panel">
+        <h2>Info</h2>
+        <p class="empty">Select an entity to see details</p>
+      </div>
     </div>
   </div>
   <script type="module" src="/src/main.ts"></script>

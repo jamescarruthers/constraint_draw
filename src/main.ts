@@ -64,8 +64,9 @@ function main(): void {
     });
   };
 
-  // Toolbar buttons
-  const buttons = document.querySelectorAll<HTMLButtonElement>('#toolbar button');
+  // Toolbar buttons — collect every .tb button across both the top bar
+  // and the left sidebar so they share the same click/active logic.
+  const buttons = document.querySelectorAll<HTMLButtonElement>('.tb');
 
   const setActiveButton = (tool: ToolMode) => {
     buttons.forEach(b => {
@@ -79,12 +80,23 @@ function main(): void {
   const updateConstructionBtn = () => {
     const btn = document.querySelector<HTMLButtonElement>('[data-action="constructionMode"]');
     if (!btn) return;
-    btn.textContent = `Construction Mode: ${handler.constructionMode ? 'ON' : 'OFF'}`;
     btn.classList.toggle('active', handler.constructionMode);
   };
 
   // Keep toolbar in sync when handler auto-returns to select
   handler.onToolChange = (tool) => setActiveButton(tool);
+
+  // Status-bar hover description: when the cursor enters any tool button
+  // show its data-desc text on the far right of the status bar; clear on leave.
+  const hoverEl = document.getElementById('status-hover')!;
+  buttons.forEach(btn => {
+    btn.addEventListener('mouseenter', () => {
+      hoverEl.textContent = btn.dataset.desc ?? '';
+    });
+    btn.addEventListener('mouseleave', () => {
+      hoverEl.textContent = '';
+    });
+  });
 
   buttons.forEach(btn => {
     btn.addEventListener('click', () => {
