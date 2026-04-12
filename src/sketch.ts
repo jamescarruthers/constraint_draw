@@ -551,7 +551,38 @@ export class SketchDocument {
     this.lastSolveMs = performance.now() - t0;
     this.state = allConverged ? 'solved' : 'conflict';
     this.runDOFAnalysis();
+
+    // When the solver failed to converge, additionally identify which
+    // specific constraints have non-zero residuals and mark their entities
+    // in red. This catches geometrically impossible configurations (e.g.
+    // horizontal + vertical + fixedLength > 0 on the same line) that
+    // aren't "over-constrained" by DOF count but ARE unsatisfiable.
+    if (!allConverged) {
+      this.markViolatedEntities();
+    }
+
     return allConverged;
+  }
+
+  /**
+   * Walk every constraint, evaluate its residual against the current q,
+   * and add any entity whose constraint residual exceeds a threshold to
+   * overConstrainedIds so the renderer highlights it in red. Called after
+   * a failed solve to surface which constraints couldn't be satisfied.
+   */
+  private markViolatedEntities(): void {
+    const threshold = 1e-4;
+    for (const c of this.constraints) {
+      if (c.type === 'arcEndpointCoupling') continue;
+      const residual = c.evaluate(this.q);
+      let norm = 0;
+      for (const r of residual) norm += r * r;
+      if (norm > threshold * threshold) {
+        for (const eid of c.entityIds) {
+          this.overConstrainedIds.add(eid);
+        }
+      }
+    }
   }
 
   /**
