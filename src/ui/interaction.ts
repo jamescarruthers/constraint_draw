@@ -984,6 +984,7 @@ export class InteractionHandler {
       selectedEntityIds: new Set(this.selectedEntities.map(e => e.id)),
       underConstrainedIds: this.doc.underConstrainedIds,
       overConstrainedIds: this.doc.overConstrainedIds,
+      fixedEntityIds: this.doc.fixedEntityIds,
       draggingEntityId: this.dragEntityId,
       constrainedVars,
       drawingPreview: this.getDrawingPreview(),

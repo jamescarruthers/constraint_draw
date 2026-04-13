@@ -61,6 +61,12 @@ function main(): void {
         else doc.dropLastUndo();
         return ok;
       },
+      onEditProperty: (varIndex, value) => {
+        doc.pushUndo();
+        doc.q[varIndex] = value;
+        doc.solve();
+        handler.renderFrame();
+      },
     });
   };
 

@@ -86,6 +86,9 @@ export interface InfoPanelCallbacks {
     newEntityId: string
   ) => void;
   onRenameEntity: (oldId: string, newId: string) => boolean;
+  /** Called when the user edits a coordinate/dimension in the properties panel.
+   *  varIndex is the global q[] index; value is the new number. */
+  onEditProperty: (varIndex: number, value: number) => void;
 }
 
 export function renderInfoPanel(
@@ -110,13 +113,14 @@ export function renderInfoPanel(
     return;
   }
 
-  const parts: string[] = ['<h2>Info</h2>'];
+  const parts: string[] = ['<h2>Properties</h2>'];
   for (const entity of selected) {
     parts.push(renderEntityCard(entity, doc));
   }
   container.innerHTML = parts.join('');
 
   wireUpEntityRenames(container, doc, callbacks);
+  wireUpPropertyEdits(container, callbacks);
   wireUpConstraintDeletes(container, callbacks);
   wireUpConstraintEdits(container, callbacks);
   wireUpConstraintReassignments(container, callbacks);
@@ -128,7 +132,7 @@ function renderSummary(doc: SketchDocument): string {
   ).length;
 
   return `
-    <h2>Info</h2>
+    <h2>Properties</h2>
     <p class="empty">Select an entity to see details</p>
     <h3>Sketch</h3>
     <div class="summary-line">entities = ${doc.entities.length}</div>
@@ -154,10 +158,30 @@ function renderEntityCard(entity: Entity, doc: SketchDocument): string {
   }
   parts.push('</div>');
 
-  // Details block
+  // Editable properties block
   parts.push('<div class="entity-details">');
-  for (const line of getEntityDetails(entity, doc.q)) {
-    parts.push(`<div class="detail-line">${escapeHtml(line)}</div>`);
+  for (const prop of getEntityProperties(entity, doc.q)) {
+    if (prop.varIndex !== undefined) {
+      // Editable property tied to a specific q[] variable
+      const step = prop.isAngle ? '0.1' : '0.01';
+      parts.push(
+        `<div class="prop-row">` +
+        `<span class="prop-label">${escapeHtml(prop.label)}</span>` +
+        `<input type="number" class="prop-input" step="${step}" ` +
+        `value="${prop.display}" ` +
+        `data-var-index="${prop.varIndex}" ` +
+        `data-is-angle="${prop.isAngle ?? false}" />` +
+        `</div>`
+      );
+    } else {
+      // Derived/computed property (read-only)
+      parts.push(
+        `<div class="prop-row">` +
+        `<span class="prop-label">${escapeHtml(prop.label)}</span>` +
+        `<span class="prop-label" style="color:#a0a0c0">${escapeHtml(prop.display)}</span>` +
+        `</div>`
+      );
+    }
   }
   parts.push('</div>');
 
@@ -350,52 +374,63 @@ function getCompatibleEntityTypes(
   }
 }
 
-function getEntityDetails(entity: Entity, q: Vec): string[] {
+interface EntityProperty {
+  label: string;
+  display: string;
+  /** If set, this property maps to q[varIndex] and is editable */
+  varIndex?: number;
+  /** If true, display/parse as degrees (stored as radians in q[]) */
+  isAngle?: boolean;
+}
+
+function getEntityProperties(entity: Entity, q: Vec): EntityProperty[] {
+  const v = entity.vars;
+
   switch (entity.type) {
-    case 'point': {
-      const [x, y] = getPointPos(entity, q);
-      return [`x = ${f(x)}`, `y = ${f(y)}`];
-    }
+    case 'point':
+      return [
+        { label: 'x', display: f(q[v[0]]), varIndex: v[0] },
+        { label: 'y', display: f(q[v[1]]), varIndex: v[1] },
+      ];
     case 'line': {
-      const [[x1, y1], [x2, y2]] = getLineEndpoints(entity, q);
-      const dx = x2 - x1, dy = y2 - y1;
+      const dx = q[v[2]] - q[v[0]], dy = q[v[3]] - q[v[1]];
       return [
-        `p1 = (${f(x1)}, ${f(y1)})`,
-        `p2 = (${f(x2)}, ${f(y2)})`,
-        `length = ${f(Math.hypot(dx, dy))}`,
-        `angle = ${deg(Math.atan2(dy, dx))}`,
+        { label: 'x1', display: f(q[v[0]]), varIndex: v[0] },
+        { label: 'y1', display: f(q[v[1]]), varIndex: v[1] },
+        { label: 'x2', display: f(q[v[2]]), varIndex: v[2] },
+        { label: 'y2', display: f(q[v[3]]), varIndex: v[3] },
+        { label: 'length', display: f(Math.hypot(dx, dy)) },
+        { label: 'angle', display: deg(Math.atan2(dy, dx)) },
       ];
     }
-    case 'circle': {
-      const { cx, cy, r } = getCircleParams(entity, q);
-      const ra = Math.abs(r);
+    case 'circle':
       return [
-        `center = (${f(cx)}, ${f(cy)})`,
-        `radius = ${f(ra)}`,
-        `diameter = ${f(ra * 2)}`,
+        { label: 'cx', display: f(q[v[0]]), varIndex: v[0] },
+        { label: 'cy', display: f(q[v[1]]), varIndex: v[1] },
+        { label: 'radius', display: f(Math.abs(q[v[2]])), varIndex: v[2] },
       ];
-    }
     case 'arc': {
-      const { cx, cy, r, thetaStart, thetaEnd } = getArcParams(entity, q);
       const { start, end } = getArcEndpoints(entity, q);
       return [
-        `center = (${f(cx)}, ${f(cy)})`,
-        `radius = ${f(Math.abs(r))}`,
-        `θ start = ${deg(thetaStart)}`,
-        `θ end = ${deg(thetaEnd)}`,
-        `start = (${f(start[0])}, ${f(start[1])})`,
-        `end = (${f(end[0])}, ${f(end[1])})`,
+        { label: 'cx', display: f(q[v[0]]), varIndex: v[0] },
+        { label: 'cy', display: f(q[v[1]]), varIndex: v[1] },
+        { label: 'radius', display: f(Math.abs(q[v[2]])), varIndex: v[2] },
+        { label: 'θ start', display: degF(q[v[3]]), varIndex: v[3], isAngle: true },
+        { label: 'θ end', display: degF(q[v[4]]), varIndex: v[4], isAngle: true },
+        { label: 'start x', display: f(start[0]) },
+        { label: 'start y', display: f(start[1]) },
+        { label: 'end x', display: f(end[0]) },
+        { label: 'end y', display: f(end[1]) },
       ];
     }
-    case 'ellipse': {
-      const { cx, cy, rx, ry, angle } = getEllipseParams(entity, q);
+    case 'ellipse':
       return [
-        `center = (${f(cx)}, ${f(cy)})`,
-        `rx = ${f(Math.abs(rx))}`,
-        `ry = ${f(Math.abs(ry))}`,
-        `rotation = ${deg(angle)}`,
+        { label: 'cx', display: f(q[v[0]]), varIndex: v[0] },
+        { label: 'cy', display: f(q[v[1]]), varIndex: v[1] },
+        { label: 'rx', display: f(Math.abs(q[v[2]])), varIndex: v[2] },
+        { label: 'ry', display: f(Math.abs(q[v[3]])), varIndex: v[3] },
+        { label: 'rotation', display: degF(q[v[4]]), varIndex: v[4], isAngle: true },
       ];
-    }
   }
 }
 
@@ -463,6 +498,29 @@ function wireUpEntityRenames(
         input.blur();
       }
     });
+    input.addEventListener('blur', commit);
+  });
+}
+
+function wireUpPropertyEdits(
+  container: HTMLElement,
+  callbacks: InfoPanelCallbacks
+): void {
+  container.querySelectorAll<HTMLInputElement>('.prop-input').forEach(input => {
+    const commit = () => {
+      const varIdx = input.dataset.varIndex;
+      if (varIdx == null) return;
+      const raw = parseFloat(input.value);
+      if (!Number.isFinite(raw)) return;
+      const isAngle = input.dataset.isAngle === 'true';
+      const value = isAngle ? (raw * Math.PI) / 180 : raw;
+      callbacks.onEditProperty(parseInt(varIdx, 10), value);
+    };
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      else if (e.key === 'Escape') input.blur();
+    });
+    input.addEventListener('change', commit);
     input.addEventListener('blur', commit);
   });
 }
@@ -535,6 +593,15 @@ function deg(rad: number): string {
   while (d > 180) d -= 360;
   while (d < -180) d += 360;
   return `${d.toFixed(1)}°`;
+}
+
+/** Like deg() but returns the numeric string without the ° suffix (for input values) */
+function degF(rad: number): string {
+  if (!Number.isFinite(rad)) return '0';
+  let d = (rad * 180) / Math.PI;
+  while (d > 180) d -= 360;
+  while (d < -180) d += 360;
+  return d.toFixed(2);
 }
 
 function escapeHtml(s: string): string {
