@@ -100,12 +100,13 @@ function entityToSVG(entity: Entity, q: number[]): string | null {
       const sy = cy + ra * Math.sin(thetaStart);
       const ex = cx + ra * Math.cos(thetaEnd);
       const ey = cy + ra * Math.sin(thetaEnd);
+      // Normalize sweep to (-π, π] so the SVG path always uses the shorter arc
       let delta = thetaEnd - thetaStart;
-      while (delta < 0) delta += 2 * Math.PI;
-      while (delta > 2 * Math.PI) delta -= 2 * Math.PI;
-      const largeArc = delta > Math.PI ? 1 : 0;
-      const sweep = 1;
-      const d = `M ${fmt(sx)} ${fmt(sy)} A ${fmt(ra)} ${fmt(ra)} 0 ${largeArc} ${sweep} ${fmt(ex)} ${fmt(ey)}`;
+      while (delta > Math.PI) delta -= 2 * Math.PI;
+      while (delta <= -Math.PI) delta += 2 * Math.PI;
+      const largeArc = 0; // always the minor arc
+      const sweepFlag = delta >= 0 ? 1 : 0;
+      const d = `M ${fmt(sx)} ${fmt(sy)} A ${fmt(ra)} ${fmt(ra)} 0 ${largeArc} ${sweepFlag} ${fmt(ex)} ${fmt(ey)}`;
       return `<path d="${d}" ${common} />`;
     }
     case 'ellipse': {

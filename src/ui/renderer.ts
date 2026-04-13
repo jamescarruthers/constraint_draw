@@ -217,8 +217,11 @@ export class Renderer {
       }
       case 'arc': {
         const { cx, cy, r, thetaStart, thetaEnd } = getArcParams(entity, q);
+        let sweep = thetaEnd - thetaStart;
+        while (sweep > Math.PI) sweep -= 2 * Math.PI;
+        while (sweep <= -Math.PI) sweep += 2 * Math.PI;
         ctx.beginPath();
-        ctx.arc(cx, cy, Math.abs(r), thetaStart, thetaEnd);
+        ctx.arc(cx, cy, Math.abs(r), thetaStart, thetaEnd, sweep < 0);
         ctx.stroke();
         break;
       }
@@ -362,8 +365,11 @@ export class Renderer {
       }
       case 'arc': {
         const { cx, cy, r, thetaStart, thetaEnd } = getArcParams(entity, q);
+        let sweep = thetaEnd - thetaStart;
+        while (sweep > Math.PI) sweep -= 2 * Math.PI;
+        while (sweep <= -Math.PI) sweep += 2 * Math.PI;
         ctx.beginPath();
-        ctx.arc(cx, cy, Math.abs(r), thetaStart, thetaEnd);
+        ctx.arc(cx, cy, Math.abs(r), thetaStart, thetaEnd, sweep < 0);
         ctx.stroke();
         break;
       }

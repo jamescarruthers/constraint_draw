@@ -169,16 +169,28 @@ function distPointToSegment(
   return Math.hypot(px - projX, py - projY);
 }
 
-/** Check if angle is within [start, end] arc range, handling wrapping */
+/**
+ * Check if angle is within the shorter arc from start to end.
+ * Uses the same (-π, π] sweep normalization as the renderer so the
+ * hit-test region matches what's drawn on screen.
+ */
 function isAngleInRange(angle: number, start: number, end: number): boolean {
-  // Normalize to [0, 2pi]
   const TWO_PI = Math.PI * 2;
   const norm = (a: number) => ((a % TWO_PI) + TWO_PI) % TWO_PI;
 
-  const a = norm(angle);
-  const s = norm(start);
-  const e = norm(end);
+  // Determine the shorter-arc sweep direction
+  let sweep = end - start;
+  while (sweep > Math.PI) sweep -= TWO_PI;
+  while (sweep <= -Math.PI) sweep += TWO_PI;
 
-  if (s <= e) return a >= s && a <= e;
-  return a >= s || a <= e;
+  // Angle offset from start, normalized to [0, 2π)
+  const off = (norm(angle) - norm(start) + TWO_PI) % TWO_PI;
+
+  if (sweep >= 0) {
+    // Arc goes counterclockwise: offset must be within [0, sweep]
+    return off <= sweep + 0.01;
+  } else {
+    // Arc goes clockwise: offset must be within [sweep+2π, 2π]
+    return off >= TWO_PI + sweep - 0.01;
+  }
 }
