@@ -276,10 +276,19 @@ export class SketchDocument {
       case 'fixed': {
         const [a] = entities;
         if (!a) return null;
-        // Fix ALL variables of the entity to their current values.
-        // Works for any entity type: point (2 DOF), line (4), circle (3),
-        // arc (9 incl. endpoint vars), ellipse (5).
-        const varIndices = [...a.vars];
+        // If a specific sub-part was clicked (e.g. a line endpoint), fix
+        // just that sub-part's point vars. Otherwise fix ALL variables of
+        // the entity. This lets the user fix a single endpoint of a line
+        // while leaving the other endpoint free to move.
+        const subPartVars = pv(0, a);
+        let varIndices: number[];
+        if (subPartVars && pointVarOverrides?.[0]) {
+          // A specific sub-part was targeted — fix just those 2 vars
+          varIndices = [subPartVars[0], subPartVars[1]];
+        } else {
+          // No sub-part override — fix the whole entity
+          varIndices = [...a.vars];
+        }
         const targets = varIndices.map(v => this.q[v]);
         return new FixedEntityConstraint(varIndices, targets, eids, id);
       }
