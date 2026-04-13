@@ -51,12 +51,19 @@ export class InteractionHandler {
   /** Whether we've already pushed an undo snapshot for the active drag */
   private pushedUndoForDrag = false;
 
-  /** Active rigid line-body drag state (free translation) */
+  /** Active rigid line-body drag state (free or perpendicular translation) */
   private lineBodyDrag: {
     line: Entity;
     origP1: [number, number];
     origP2: [number, number];
     origCursor: [number, number];
+    /**
+     * If the line has direction constraints (horizontal, vertical,
+     * fixedAngle), drag is projected onto this perpendicular direction
+     * so the line slides without breaking the constraint. Null means
+     * free translation in both axes.
+     */
+    perpDir: [number, number] | null;
     /** Non-neighbor vars to pin during the rigid drag */
     extraPinned: number[];
   } | null = null;
@@ -255,15 +262,23 @@ export class InteractionHandler {
 
     if (this.lineBodyDrag) {
       const st = this.lineBodyDrag;
-      const dx = wx - st.origCursor[0];
-      const dy = wy - st.origCursor[1];
+      let dx = wx - st.origCursor[0];
+      let dy = wy - st.origCursor[1];
+
+      // If the line has direction constraints, project the delta onto the
+      // perpendicular so the line slides without violating its direction.
+      if (st.perpDir) {
+        const perp = dx * st.perpDir[0] + dy * st.perpDir[1];
+        dx = perp * st.perpDir[0];
+        dy = perp * st.perpDir[1];
+      }
+
       // Only push undo once we actually start moving
       if (!this.pushedUndoForDrag && (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6)) {
         this.doc.pushUndo();
         this.pushedUndoForDrag = true;
       }
-      // Translate both endpoints by the full cursor delta (free translation,
-      // preserving length and direction).
+
       this.doc.translateLineRigid(
         st.line,
         [st.origP1[0] + dx, st.origP1[1] + dy],
@@ -432,11 +447,29 @@ export class InteractionHandler {
       // whole line slides sideways while keeping length/direction.
       if (hit.entity.type === 'line' && hit.part === 'body') {
         const [[x1, y1], [x2, y2]] = getLineEndpoints(hit.entity, this.doc.q);
+
+        // If the line has a direction constraint (horizontal, vertical,
+        // fixedAngle), restrict drag to the perpendicular direction so
+        // the line slides without violating the constraint (e.g. a
+        // horizontal side of a rectangle only moves vertically).
+        // Unconstrained lines get free translation in both axes.
+        const hasDirection = this.doc.constraints.some(c =>
+          c.entityIds.includes(hit.entity.id) &&
+          (c.type === 'horizontal' || c.type === 'vertical' || c.type === 'fixedAngle')
+        );
+        let perpDir: [number, number] | null = null;
+        if (hasDirection) {
+          const dx = x2 - x1, dy = y2 - y1;
+          const len = Math.hypot(dx, dy) || 1;
+          perpDir = [-dy / len, dx / len];
+        }
+
         this.lineBodyDrag = {
           line: hit.entity,
           origP1: [x1, y1],
           origP2: [x2, y2],
           origCursor: [...this.mouseWorld] as [number, number],
+          perpDir,
           extraPinned: this.doc.getNonNeighborVars(hit.entity.id),
         };
         this.isDragging = true;
