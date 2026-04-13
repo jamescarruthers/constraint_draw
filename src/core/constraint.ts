@@ -145,6 +145,38 @@ export class FixedPointConstraint extends BaseConstraint {
   }
 }
 
+/**
+ * Fix an entire entity: pin every variable to its current value.
+ * Works with any entity type (point, line, circle, arc, ellipse).
+ * dof = number of variables pinned.
+ */
+export class FixedEntityConstraint extends BaseConstraint {
+  readonly type = 'fixed' as const;
+  readonly dof: number;
+  private varIndices: number[];
+  private targets: number[];
+
+  constructor(varIndices: number[], targets: number[], entityIds: string[], id?: string) {
+    super(entityIds, [...targets], id);
+    this.varIndices = varIndices;
+    this.targets = targets;
+    this.dof = varIndices.length;
+  }
+
+  evaluate(q: Vec): Vec {
+    return this.varIndices.map((vi, i) => q[vi] - this.targets[i]);
+  }
+
+  jacobianEntries(_q: Vec, row: number): SparseEntry[] {
+    return this.varIndices.map((vi, i) => ({ row: row + i, col: vi, val: 1 }));
+  }
+
+  setParams(params: number[]): void {
+    super.setParams(params);
+    this.targets = [...params];
+  }
+}
+
 /** Point on Line: P lies on infinite line through A–B */
 export class PointOnLineConstraint extends BaseConstraint {
   readonly type = 'pointOnLine' as const;

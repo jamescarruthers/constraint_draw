@@ -301,6 +301,37 @@
       outline: none;
     }
     #info-panel .constraint-reassign:focus { border-color: #5dade2; }
+    #info-panel .prop-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 1px 0;
+    }
+    #info-panel .prop-label {
+      color: #6a7aa0;
+      font-family: monospace;
+      font-size: 11px;
+      min-width: 55px;
+      flex-shrink: 0;
+    }
+    #info-panel .prop-input {
+      background: transparent;
+      color: #a0a0c0;
+      border: 1px solid transparent;
+      border-radius: 3px;
+      padding: 1px 4px;
+      font-family: monospace;
+      font-size: 11px;
+      width: 75px;
+      text-align: right;
+      outline: none;
+    }
+    #info-panel .prop-input:hover { border-color: #1a2444; }
+    #info-panel .prop-input:focus {
+      border-color: #5dade2;
+      background: #1a2444;
+      color: #e0e0e0;
+    }
   </style>
 </head>
 <body>
@@ -327,7 +358,7 @@
       <!-- ═══ Left sidebar: constraints + dimensions ═══ -->
       <div id="sidebar">
         <button class="tb" data-tool="coincident"          data-desc="Coincident">⊕</button>
-        <button class="tb" data-tool="fixed"               data-desc="Fix Point">⊗</button>
+        <button class="tb" data-tool="fixed"               data-desc="Fix Entity">⊗</button>
         <button class="tb" data-tool="horizontal"          data-desc="Horizontal">═</button>
         <button class="tb" data-tool="vertical"            data-desc="Vertical">║</button>
         <button class="tb" data-tool="parallel"            data-desc="Parallel">∥</button>
@@ -363,9 +394,9 @@
         </div>
       </div>
 
-      <!-- ═══ Info panel (right) ═══ -->
+      <!-- ═══ Properties panel (right) ═══ -->
       <div id="info-panel">
-        <h2>Info</h2>
+        <h2>Properties</h2>
         <p class="empty">Select an entity to see details</p>
       </div>
     </div>

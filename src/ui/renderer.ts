@@ -2,16 +2,21 @@ import { Entity, getPointPos, getLineEndpoints, getCircleParams, getArcParams, g
 import { BaseConstraint } from '../core/constraint';
 import { DOFState, Vec } from '../core/types';
 
-/** Colour scheme */
+/** Colour scheme — entity colours follow the CAD convention:
+ *   Blue  = under-constrained (can still move)
+ *   White = fully constrained (locked by dimensions/constraints)
+ *   Green = explicitly fixed (pinned via Fix constraint)
+ *   Red   = over-constrained / conflict
+ */
 const COLORS = {
   background: '#1a1a2e',
   grid: '#252545',
   gridMajor: '#2a2a5a',
   entity: {
-    default: '#c0c0d0',
-    'under-constrained': '#5dade2',
-    'fully-constrained': '#e0e0e0',
-    'over-constrained': '#e94560',
+    'under-constrained': '#5dade2',   // blue
+    'fully-constrained': '#e8e8f0',   // white / light
+    'over-constrained': '#e94560',    // red
+    'fixed': '#4ecca3',               // green
   },
   /** Muted tone for construction / reference geometry */
   construction: '#7a6f9c',
@@ -61,6 +66,7 @@ export interface RenderState {
   selectedEntityIds: Set<string>;
   underConstrainedIds: Set<string>;
   overConstrainedIds: Set<string>;
+  fixedEntityIds: Set<string>;
   draggingEntityId: string | null;
   /** Variable indices that are referenced by at least one constraint */
   constrainedVars: Set<number>;
@@ -258,17 +264,19 @@ export class Renderer {
   }
 
   private pickEntityColor(entity: Entity, state: RenderState): string {
-    const isSelected = state.selectedEntityIds.has(entity.id);
     const isDragging = state.draggingEntityId === entity.id;
-    const isUnder = state.underConstrainedIds.has(entity.id);
+    const isSelected = state.selectedEntityIds.has(entity.id);
     const isOver = state.overConstrainedIds.has(entity.id);
+    const isFixed = state.fixedEntityIds.has(entity.id);
+    const isUnder = state.underConstrainedIds.has(entity.id);
 
     if (isDragging) return COLORS.dragging;
     if (isSelected) return COLORS.selected;
-    if (isOver) return COLORS.entity['over-constrained'];
+    if (isOver) return COLORS.entity['over-constrained'];  // red
     if (entity.construction) return COLORS.construction;
-    if (isUnder) return COLORS.entity['under-constrained'];
-    return COLORS.entity['fully-constrained'];
+    if (isFixed) return COLORS.entity['fixed'];             // green
+    if (isUnder) return COLORS.entity['under-constrained']; // blue
+    return COLORS.entity['fully-constrained'];              // white
   }
 
   private drawGrid(): void {

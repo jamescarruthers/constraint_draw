@@ -3,6 +3,7 @@ import {
   BaseConstraint,
   CoincidentConstraint,
   FixedPointConstraint,
+  FixedEntityConstraint,
   PointOnLineConstraint,
   PointOnCircleConstraint,
   MidpointConstraint,
@@ -48,6 +49,8 @@ export class SketchDocument {
   dofCount = 0;
   underConstrainedIds = new Set<string>();
   overConstrainedIds = new Set<string>();
+  /** Entities that have an explicit "fixed" constraint pinning them in place */
+  fixedEntityIds = new Set<string>();
 
   private solver = new NRSolver();
   private dofAnalyser = new DOFAnalyser();
@@ -273,9 +276,12 @@ export class SketchDocument {
       case 'fixed': {
         const [a] = entities;
         if (!a) return null;
-        const av = pv(0, a);
-        if (!av) return null;
-        return new FixedPointConstraint(av[0], av[1], this.q[av[0]], this.q[av[1]], eids, id);
+        // Fix ALL variables of the entity to their current values.
+        // Works for any entity type: point (2 DOF), line (4), circle (3),
+        // arc (9 incl. endpoint vars), ellipse (5).
+        const varIndices = [...a.vars];
+        const targets = varIndices.map(v => this.q[v]);
+        return new FixedEntityConstraint(varIndices, targets, eids, id);
       }
       case 'pointOnLine': {
         const [pt, line] = entities;
@@ -503,6 +509,14 @@ export class SketchDocument {
     this.underConstrainedIds = this.dofAnalyser.findUnderConstrainedEntities(
       this.entities, this.constraints, this.q, this.fixedVars, this.q.length
     );
+
+    // Collect entity IDs that carry an explicit "fixed" constraint
+    this.fixedEntityIds.clear();
+    for (const c of this.constraints) {
+      if (c.type === 'fixed') {
+        for (const eid of c.entityIds) this.fixedEntityIds.add(eid);
+      }
+    }
 
     this.overConstrainedIds.clear();
     if (this.dofState === 'over-constrained') {
