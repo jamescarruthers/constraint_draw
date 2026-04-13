@@ -57,6 +57,8 @@ export class InteractionHandler {
     origP2: [number, number];
     perpDir: [number, number];
     origCursor: [number, number];
+    /** Non-neighbor vars to pin during the rigid drag */
+    extraPinned: number[];
   } | null = null;
 
   /** World position of the most recent click — used for "cycle" detection */
@@ -208,7 +210,8 @@ export class InteractionHandler {
       this.doc.translateLineRigid(
         st.line,
         [st.origP1[0] + ox, st.origP1[1] + oy],
-        [st.origP2[0] + ox, st.origP2[1] + oy]
+        [st.origP2[0] + ox, st.origP2[1] + oy],
+        st.extraPinned
       );
       this.renderFrame();
       return;
@@ -380,6 +383,7 @@ export class InteractionHandler {
           origP2: [x2, y2],
           perpDir: [-dy / len, dx / len],
           origCursor: [...this.mouseWorld] as [number, number],
+          extraPinned: this.doc.getNonNeighborVars(hit.entity.id),
         };
         this.isDragging = true;
         this.dragEntityId = hit.entity.id;
@@ -415,22 +419,35 @@ export class InteractionHandler {
   /**
    * When grabbing a specific sub-part of an entity, return the list of
    * variable indices to temporarily pin for the duration of the drag.
-   *   - Line endpoint: pin the opposite endpoint.
-   *   - Arc endpoint: pin the center and the opposite endpoint, so the
-   *     dragged endpoint slides along the arc's circle (radius preserved).
+   *
+   * Two layers of pinning:
+   *   1. Same-entity: pin the "other" part of the dragged entity so it
+   *      acts as an anchor (line endpoint, arc center + far endpoint).
+   *   2. Non-neighbors: pin ALL entities that don't share a constraint
+   *      with the dragged entity. Only the dragged entity and its
+   *      immediate constraint neighbours stay free, so distant geometry
+   *      can't drift.
    */
   private computeTempFixedForDrag(hit: HitResult): number[] {
+    const result: number[] = [];
     const e = hit.entity;
+
+    // Layer 1: pin the "anchor" part of the dragged entity itself
     if (e.type === 'line') {
-      if (hit.part === 'p1') return [e.vars[2], e.vars[3]];
-      if (hit.part === 'p2') return [e.vars[0], e.vars[1]];
+      if (hit.part === 'p1') result.push(e.vars[2], e.vars[3]);
+      else if (hit.part === 'p2') result.push(e.vars[0], e.vars[1]);
     }
     if (e.type === 'arc') {
-      // Pin center + the non-grabbed endpoint
-      if (hit.part === 'p1') return [e.vars[0], e.vars[1], e.vars[7], e.vars[8]];
-      if (hit.part === 'p2') return [e.vars[0], e.vars[1], e.vars[5], e.vars[6]];
+      if (hit.part === 'p1') result.push(e.vars[0], e.vars[1], e.vars[7], e.vars[8]);
+      else if (hit.part === 'p2') result.push(e.vars[0], e.vars[1], e.vars[5], e.vars[6]);
     }
-    return [];
+
+    // Layer 2: freeze every entity that is NOT a direct constraint
+    // neighbour of the dragged entity ("pin the world except what's
+    // touching the grab, as much as possible")
+    result.push(...this.doc.getNonNeighborVars(e.id));
+
+    return result;
   }
 
   /**

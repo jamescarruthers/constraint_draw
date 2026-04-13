@@ -586,6 +586,30 @@ export class SketchDocument {
   }
 
   /**
+   * Return the variable indices of every entity that is NOT a direct
+   * constraint neighbor of the given entity. "Neighbor" means any entity
+   * that shares at least one constraint with `entityId`. The dragged
+   * entity itself is always considered a neighbor (so its vars are NOT
+   * returned). Used by the drag handlers to freeze the world except what
+   * is directly touching the grab.
+   */
+  getNonNeighborVars(entityId: string): number[] {
+    const neighbors = new Set<string>();
+    neighbors.add(entityId);
+    for (const c of this.constraints) {
+      if (c.entityIds.includes(entityId)) {
+        for (const eid of c.entityIds) neighbors.add(eid);
+      }
+    }
+    const result: number[] = [];
+    for (const entity of this.entities) {
+      if (neighbors.has(entity.id)) continue;
+      result.push(...entity.vars);
+    }
+    return result;
+  }
+
+  /**
    * Solve with an extra set of variables temporarily pinned on top of the
    * permanent `fixedVars`. Used when the user applies a constraint so that
    * the "target" entity (the reference — usually the last clicked) doesn't
@@ -725,7 +749,8 @@ export class SketchDocument {
   translateLineRigid(
     line: Entity,
     newP1: [number, number],
-    newP2: [number, number]
+    newP2: [number, number],
+    extraFixed?: number[]
   ): void {
     const savedQ = [...this.q];
     const v = line.vars;
@@ -739,6 +764,7 @@ export class SketchDocument {
     fixed.add(v[1]);
     fixed.add(v[2]);
     fixed.add(v[3]);
+    if (extraFixed) for (const f of extraFixed) fixed.add(f);
 
     this.state = 'solving';
     const t0 = performance.now();
