@@ -51,12 +51,11 @@ export class InteractionHandler {
   /** Whether we've already pushed an undo snapshot for the active drag */
   private pushedUndoForDrag = false;
 
-  /** Active rigid line-body drag state (perpendicular translation) */
+  /** Active rigid line-body drag state (free translation) */
   private lineBodyDrag: {
     line: Entity;
     origP1: [number, number];
     origP2: [number, number];
-    perpDir: [number, number];
     origCursor: [number, number];
     /** Non-neighbor vars to pin during the rigid drag */
     extraPinned: number[];
@@ -256,23 +255,19 @@ export class InteractionHandler {
 
     if (this.lineBodyDrag) {
       const st = this.lineBodyDrag;
-      const cdx = wx - st.origCursor[0];
-      const cdy = wy - st.origCursor[1];
-      // Project the cursor delta onto the line's perpendicular direction
-      // and translate both endpoints by that projected offset.
-      const perp = cdx * st.perpDir[0] + cdy * st.perpDir[1];
-      // Only push undo once we actually start moving (so a plain click
-      // that doesn't drag doesn't create a no-op undo entry).
-      if (!this.pushedUndoForDrag && Math.abs(perp) > 1e-6) {
+      const dx = wx - st.origCursor[0];
+      const dy = wy - st.origCursor[1];
+      // Only push undo once we actually start moving
+      if (!this.pushedUndoForDrag && (Math.abs(dx) > 1e-6 || Math.abs(dy) > 1e-6)) {
         this.doc.pushUndo();
         this.pushedUndoForDrag = true;
       }
-      const ox = perp * st.perpDir[0];
-      const oy = perp * st.perpDir[1];
+      // Translate both endpoints by the full cursor delta (free translation,
+      // preserving length and direction).
       this.doc.translateLineRigid(
         st.line,
-        [st.origP1[0] + ox, st.origP1[1] + oy],
-        [st.origP2[0] + ox, st.origP2[1] + oy],
+        [st.origP1[0] + dx, st.origP1[1] + dy],
+        [st.origP2[0] + dx, st.origP2[1] + dy],
         st.extraPinned
       );
       this.renderFrame();
@@ -437,13 +432,10 @@ export class InteractionHandler {
       // whole line slides sideways while keeping length/direction.
       if (hit.entity.type === 'line' && hit.part === 'body') {
         const [[x1, y1], [x2, y2]] = getLineEndpoints(hit.entity, this.doc.q);
-        const dx = x2 - x1, dy = y2 - y1;
-        const len = Math.hypot(dx, dy) || 1;
         this.lineBodyDrag = {
           line: hit.entity,
           origP1: [x1, y1],
           origP2: [x2, y2],
-          perpDir: [-dy / len, dx / len],
           origCursor: [...this.mouseWorld] as [number, number],
           extraPinned: this.doc.getNonNeighborVars(hit.entity.id),
         };
