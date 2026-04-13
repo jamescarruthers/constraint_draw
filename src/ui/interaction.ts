@@ -13,6 +13,7 @@ export type ToolMode =
   | 'delete'
   | 'save'
   | 'load'
+  | 'fillet'
   | ConstraintType;
 
 interface PendingClick {
@@ -163,10 +164,71 @@ export class InteractionHandler {
       case 'arc':
         this.handleAddArc(wx, wy, hits);
         break;
+      case 'fillet':
+        this.handleFillet(hits);
+        break;
       default:
         // Constraint tools: need entity selection
         this.handleConstraintClick(hits, wx, wy);
         break;
+    }
+  }
+
+  /**
+   * Fillet tool: user clicks two lines that share a corner. An arc is
+   * created between them with the specified radius, tangent to both
+   * lines, with the corner coincident removed and replaced by arc
+   * endpoint coincidents.
+   */
+  private handleFillet(hits: HitResult[]): void {
+    if (hits.length === 0) return;
+
+    const hit = this.pickBestHit(hits);
+    if (hit.entity.type !== 'line') return; // fillet only works on lines
+
+    this.pendingClicks.push({
+      wx: this.mouseWorld[0],
+      wy: this.mouseWorld[1],
+      entity: hit.entity,
+      hit,
+    });
+
+    if (this.pendingClicks.length >= 2) {
+      const e1 = this.pendingClicks[0].entity!;
+      const e2 = this.pendingClicks[1].entity!;
+
+      if (e1.type !== 'line' || e2.type !== 'line' || e1.id === e2.id) {
+        this.pendingClicks = [];
+        this.updateStatus();
+        this.renderFrame();
+        return;
+      }
+
+      // Prompt for radius
+      const input = prompt('Enter fillet radius:', '10');
+      if (input === null) {
+        this.pendingClicks = [];
+        this.updateStatus();
+        this.renderFrame();
+        return;
+      }
+      const radius = parseFloat(input);
+      if (!Number.isFinite(radius) || radius <= 0) {
+        this.pendingClicks = [];
+        this.returnToSelect();
+        return;
+      }
+
+      this.doc.pushUndo();
+      const arc = this.doc.createFillet(e1.id, e2.id, radius);
+      this.pendingClicks = [];
+
+      if (arc && this.constructionMode) arc.construction = true;
+
+      this.returnToSelect();
+    } else {
+      this.updateStatus();
+      this.renderFrame();
     }
   }
 
@@ -262,7 +324,7 @@ export class InteractionHandler {
 
   /** Tools where hovering over an entity gives meaningful feedback */
   private isTargetingTool(tool: ToolMode): boolean {
-    if (tool === 'select' || tool === 'delete') return true;
+    if (tool === 'select' || tool === 'delete' || tool === 'fillet') return true;
     if (tool === 'point' || tool === 'line' || tool === 'circle' || tool === 'arc') return false;
     if (tool === 'save' || tool === 'load') return false;
     return true; // any ConstraintType
@@ -1068,6 +1130,8 @@ export class InteractionHandler {
       if (have === 0) info = 'Click center';
       else if (have === 1) info = 'Click start point';
       else info = 'Click end point';
+    } else if (this.tool === 'fillet') {
+      info = have === 0 ? 'Click first line' : 'Click second line';
     } else if (this.tool !== 'select' && this.tool !== 'delete' && this.tool !== 'point') {
       const needed = this.getRequiredEntityCount(this.tool as ConstraintType);
       if (have < needed) {

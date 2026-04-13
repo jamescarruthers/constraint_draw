@@ -34,6 +34,12 @@ import { DragIntegrator } from './core/drag';
 import { ConstraintGraph } from './core/graph';
 import { ConstraintType, DOFState, EntityType, SolverState, Vec } from './core/types';
 
+/** Normalize a 2D vector; returns [0,0] if length is near zero */
+function vecNorm2D(v: [number, number]): [number, number] {
+  const len = Math.hypot(v[0], v[1]);
+  return len > 1e-10 ? [v[0] / len, v[1] / len] : [0, 0];
+}
+
 /**
  * The main sketch document: holds all entities, constraints, parameters,
  * and orchestrates the solver, DOF analysis, and drag system.
@@ -651,6 +657,121 @@ export class SketchDocument {
       // left reflecting the temporarily pinned state.
       this.runDOFAnalysis();
     }
+  }
+
+  // ─── Compound Tools ─────────────────────────────────────────────
+
+  /**
+   * Create a fillet arc between two lines that share (or nearly share) a
+   * corner. This is a compound operation that:
+   *   1. Identifies the corner (closest pair of line endpoints)
+   *   2. Removes any coincident constraint at that corner
+   *   3. Creates an arc entity with initial geometry on the angle bisector
+   *   4. Adds coincident, tangent, and fixedRadius constraints
+   *
+   * Returns the created arc entity, or null on failure.
+   */
+  createFillet(line1Id: string, line2Id: string, radius: number): Entity | null {
+    const l1 = this.getEntity(line1Id);
+    const l2 = this.getEntity(line2Id);
+    if (!l1 || !l2 || l1.type !== 'line' || l2.type !== 'line') return null;
+
+    // 1. Find the corner: the closest pair of endpoints between the two lines
+    const l1p1: [number, number] = [this.q[l1.vars[0]], this.q[l1.vars[1]]];
+    const l1p2: [number, number] = [this.q[l1.vars[2]], this.q[l1.vars[3]]];
+    const l2p1: [number, number] = [this.q[l2.vars[0]], this.q[l2.vars[1]]];
+    const l2p2: [number, number] = [this.q[l2.vars[2]], this.q[l2.vars[3]]];
+
+    type Pair = { l1End: 'p1' | 'p2'; l2End: 'p1' | 'p2'; dist: number };
+    const pairs: Pair[] = [
+      { l1End: 'p1', l2End: 'p1', dist: Math.hypot(l1p1[0] - l2p1[0], l1p1[1] - l2p1[1]) },
+      { l1End: 'p1', l2End: 'p2', dist: Math.hypot(l1p1[0] - l2p2[0], l1p1[1] - l2p2[1]) },
+      { l1End: 'p2', l2End: 'p1', dist: Math.hypot(l1p2[0] - l2p1[0], l1p2[1] - l2p1[1]) },
+      { l1End: 'p2', l2End: 'p2', dist: Math.hypot(l1p2[0] - l2p2[0], l1p2[1] - l2p2[1]) },
+    ];
+    pairs.sort((a, b) => a.dist - b.dist);
+    const { l1End, l2End } = pairs[0];
+
+    const corner: [number, number] = l1End === 'p1' ? l1p1 : l1p2;
+
+    // 2. Remove any coincident constraint between those corner endpoints
+    this.constraints = this.constraints.filter(c => {
+      if (c.type !== 'coincident') return true;
+      if (!c.entityIds.includes(line1Id) || !c.entityIds.includes(line2Id)) return true;
+      // Check sub-parts match the corner
+      if (c.subParts) {
+        const i1 = c.entityIds.indexOf(line1Id);
+        const i2 = c.entityIds.indexOf(line2Id);
+        if (c.subParts[i1] && c.subParts[i1] !== l1End) return true;
+        if (c.subParts[i2] && c.subParts[i2] !== l2End) return true;
+      }
+      return false; // remove this one
+    });
+
+    // 3. Compute arc geometry
+    // Direction vectors pointing AWAY from corner along each line
+    const l1Opp = l1End === 'p1' ? l1p2 : l1p1;
+    const l2Opp = l2End === 'p1' ? l2p2 : l2p1;
+    const d1 = vecNorm2D([l1Opp[0] - corner[0], l1Opp[1] - corner[1]]);
+    const d2 = vecNorm2D([l2Opp[0] - corner[0], l2Opp[1] - corner[1]]);
+
+    // Bisector direction
+    const bx = d1[0] + d2[0], by = d1[1] + d2[1];
+    const bLen = Math.hypot(bx, by) || 1;
+    const bisector: [number, number] = [bx / bLen, by / bLen];
+
+    // Half-angle between the two lines
+    const dot = d1[0] * d2[0] + d1[1] * d2[1];
+    const halfAngle = Math.acos(Math.max(-1, Math.min(1, dot))) / 2;
+    if (halfAngle < 0.01) return null; // lines nearly parallel, can't fillet
+
+    // Center at distance r/sin(halfAngle) from corner along bisector
+    const distToCenter = radius / Math.sin(halfAngle);
+    const cx = corner[0] + bisector[0] * distToCenter;
+    const cy = corner[1] + bisector[1] * distToCenter;
+
+    // Tangent points: distance r/tan(halfAngle) from corner along each line
+    const tangentDist = radius / Math.tan(halfAngle);
+    const tp1: [number, number] = [
+      corner[0] + d1[0] * tangentDist,
+      corner[1] + d1[1] * tangentDist,
+    ];
+    const tp2: [number, number] = [
+      corner[0] + d2[0] * tangentDist,
+      corner[1] + d2[1] * tangentDist,
+    ];
+
+    // Angles from center to tangent points
+    const thetaStart = Math.atan2(tp1[1] - cy, tp1[0] - cx);
+    const thetaEnd = Math.atan2(tp2[1] - cy, tp2[0] - cx);
+
+    // 4. Create the arc entity (5-value form, expanded to 9 internally)
+    const arc = this.addEntity('arc', [cx, cy, radius, thetaStart, thetaEnd]);
+
+    // 5. Add constraints
+    // Coincident: arc endpoints ↔ line corner endpoints
+    this.addConstraint('coincident', [arc.id, line1Id], [], undefined, ['p1', l1End]);
+    this.addConstraint('coincident', [arc.id, line2Id], [], undefined, ['p2', l2End]);
+    // Tangent: arc tangent to each line
+    this.addConstraint('tangentLineCircle', [line1Id, arc.id]);
+    this.addConstraint('tangentLineCircle', [line2Id, arc.id]);
+    // Fixed radius
+    this.addConstraint('fixedRadius', [arc.id], [radius]);
+
+    // Pre-position the corner endpoints at the computed tangent points
+    // so the solver starts from a near-exact state, then pin ALL line
+    // variables so only the arc adjusts. This prevents the lines from
+    // rotating when the nonlinear tangent constraint is solved.
+    const l1CornerVars = l1End === 'p1' ? [l1.vars[0], l1.vars[1]] : [l1.vars[2], l1.vars[3]];
+    const l2CornerVars = l2End === 'p1' ? [l2.vars[0], l2.vars[1]] : [l2.vars[2], l2.vars[3]];
+    this.q[l1CornerVars[0]] = tp1[0];
+    this.q[l1CornerVars[1]] = tp1[1];
+    this.q[l2CornerVars[0]] = tp2[0];
+    this.q[l2CornerVars[1]] = tp2[1];
+
+    this.solveWithExtraFixed([...l1.vars, ...l2.vars]);
+
+    return arc;
   }
 
   // ─── Drag Operations ───────────────────────────────────────────
